@@ -3,10 +3,11 @@ name: CI
 on:
   push:
     branches:
-	- main
-	- master
-	- 'phase-*'
+      - main
+      - master
+      - 'phase-*'
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -44,7 +45,7 @@ jobs:
       - run: cargo test --workspace --all-targets
 
   doctest:
-    name: Doctest
+    name: Doctests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
