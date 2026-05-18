@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use crate::snapshot::SnapshotId;
+
 /// Top-level error type for all core operations.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -19,6 +21,65 @@ pub enum CoreError {
     /// Detector catalog parse error.
     #[error(transparent)]
     Detector(#[from] DetectorError),
+
+    /// Snapshot error.
+    #[error(transparent)]
+    Snapshot(#[from] SnapshotError),
+
+    /// A path is not valid UTF-8.
+    #[error("path is not valid UTF-8: {0}")]
+    NonUtf8Path(PathBuf),
+}
+
+/// Errors that can occur in snapshot operations.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum SnapshotError {
+    /// I/O error associated with a specific path.
+    #[error("I/O error at {path}: {source}")]
+    Io {
+        /// Path that triggered the error.
+        path: PathBuf,
+        /// Underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The tarball archive is corrupt or unreadable.
+    #[error("snapshot {0} tarball is corrupt")]
+    TarballCorrupt(SnapshotId),
+
+    /// The sidecar manifest hash does not match the internal manifest hash.
+    #[error("manifest mismatch: sidecar hash {sidecar_hash} != internal hash {internal_hash}")]
+    ManifestMismatch {
+        /// Hash from the sidecar manifest.
+        sidecar_hash: String,
+        /// Hash from the embedded manifest inside the tarball.
+        internal_hash: String,
+    },
+
+    /// A target file's sha256 does not match what the manifest records.
+    #[error("checksum mismatch for {path}: expected {expected}, got {actual}")]
+    ChecksumMismatch {
+        /// The expected sha256 hex string from the manifest.
+        expected: String,
+        /// The actual sha256 hex string computed from the file.
+        actual: String,
+        /// Path of the file that failed verification.
+        path: PathBuf,
+    },
+
+    /// The requested snapshot does not exist.
+    #[error("snapshot not found: {0}")]
+    NotFound(SnapshotId),
+
+    /// The archive has an invalid structure or unsupported format.
+    #[error("invalid archive: {0}")]
+    InvalidArchive(String),
+
+    /// JSON serialization/deserialization error.
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 /// Errors that can occur when initialising the dotfile [`Detector`][crate::detector::Detector].
