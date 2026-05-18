@@ -15,15 +15,11 @@ path = "src/main.rs"
 [dependencies]
 archdots-core = { path = "../archdots-core" }
 clap.workspace = true
-ratatui.workspace = true
-crossterm.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-color-eyre.workspace = true
 
 [dev-dependencies]
-# CLI integration tests: spawn the binary and assert on output/exit code.
-assert_cmd = "2"
-predicates = "3"
-tempfile = "3"
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true

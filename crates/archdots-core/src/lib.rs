@@ -9,9 +9,7 @@
 
 pub mod detector;
 pub mod error;
-pub mod linker;
 pub mod profile;
-pub mod snapshot;
 
 pub use error::CoreError;
 
