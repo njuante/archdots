@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/archdots-core",
+    "crates/archdots",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Pablo <pablo@procesozero.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pablo/archdots"
+homepage = "https://github.com/pablo/archdots"
+readme = "README.md"
+keywords = ["dotfiles", "arch", "linux", "ricing", "tui"]
+categories = ["command-line-utilities", "config"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+walkdir = "2"
+tempfile = "3"
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.28"
+crossterm = "0.28"
+color-eyre = "0.6"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3
+
+[profile.dev]
+opt-level = 0
+debug = true
