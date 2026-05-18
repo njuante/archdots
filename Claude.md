@@ -132,3 +132,9 @@ Conventional Commits estrictos:
 - No añadir features fuera del roadmap actual sin discutirlo.
 - No tocar `$HOME` del usuario en tests. Usar `tempfile::TempDir` siempre.
 - No asumir que `pacman` o un WM concreto está instalado al testear.
+
+## Commit conventions
+
+- Do NOT add "Co-Authored-By: Claude" trailers.
+- Do NOT add "🤖 Generated with Claude Code" lines.
+- Commit messages should be clean Conventional Commits with no AI attribution.
