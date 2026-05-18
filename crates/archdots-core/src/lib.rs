@@ -10,6 +10,7 @@
 pub mod detector;
 pub mod error;
 pub mod journal;
+pub mod lock;
 pub mod profile;
 pub mod snapshot;
 

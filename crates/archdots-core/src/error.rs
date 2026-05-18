@@ -30,6 +30,10 @@ pub enum CoreError {
     #[error(transparent)]
     Journal(#[from] JournalError),
 
+    /// Lock error.
+    #[error(transparent)]
+    Lock(#[from] LockError),
+
     /// A path is not valid UTF-8.
     #[error("path is not valid UTF-8: {0}")]
     NonUtf8Path(PathBuf),
@@ -211,4 +215,32 @@ pub enum ProfileError {
         /// The full unexpanded target string for context.
         target: String,
     },
+}
+
+/// Errors that can occur when acquiring or releasing the apply lock.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum LockError {
+    /// I/O error associated with a specific path.
+    #[error("I/O error at {path}: {source}")]
+    Io {
+        /// Path that triggered the error.
+        path: PathBuf,
+        /// Underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The lock is currently held by another process.
+    ///
+    /// `pid` is `None` when the lockfile exists but contains no readable PID.
+    #[error("lock is busy (held by pid {pid:?})")]
+    Busy {
+        /// PID of the lock holder, if readable from the lockfile.
+        pid: Option<u32>,
+    },
+
+    /// `acquire_blocking` did not obtain the lock before the deadline.
+    #[error("timed out waiting for apply lock")]
+    Timeout,
 }

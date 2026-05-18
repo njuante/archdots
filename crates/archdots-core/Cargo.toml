@@ -21,3 +21,4 @@ tar.workspace = true
 ulid.workspace = true
 time.workspace = true
 serde_json.workspace = true
+rustix.workspace = true
