@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: ["main", "master"]
+    branches:
+	- main
+	- master
+	- 'phase-*'
   pull_request:
 
 env:
