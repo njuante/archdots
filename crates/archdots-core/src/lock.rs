@@ -87,12 +87,10 @@ impl ApplyLock {
                     pid,
                 })
             }
-            Err(e) if e == rustix::io::Errno::WOULDBLOCK => {
-                Err(LockError::Busy {
-                    pid: read_pid_from_file(&lock_path),
-                }
-                .into())
+            Err(e) if e == rustix::io::Errno::WOULDBLOCK => Err(LockError::Busy {
+                pid: read_pid_from_file(&lock_path),
             }
+            .into()),
             Err(e) => Err(LockError::Io {
                 path: lock_path,
                 source: std::io::Error::from_raw_os_error(e.raw_os_error()),
@@ -261,7 +259,10 @@ mod tests {
 
         let result = ApplyLock::acquire_blocking(&state_home, Duration::from_millis(500));
         handle.join().unwrap();
-        assert!(result.is_ok(), "expected Ok after holder dropped, got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected Ok after holder dropped, got: {result:?}"
+        );
     }
 
     // ── 9. cross-process: parent sees Busy with child's PID ──────────────────
@@ -304,7 +305,11 @@ mod tests {
         let mut child = std::process::Command::new(&exe)
             .env(HELPER_ENV, &state_home)
             // Filter to our test; --include-ignored allows the #[ignore] test to run.
-            .args(["cross_process_lock_pid", "--include-ignored", "--test-threads=1"])
+            .args([
+                "cross_process_lock_pid",
+                "--include-ignored",
+                "--test-threads=1",
+            ])
             .spawn()
             .expect("spawn helper child");
 

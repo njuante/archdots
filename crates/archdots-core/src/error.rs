@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::snapshot::SnapshotId;
+use crate::{journal::JournalId, linker::ConflictReason, snapshot::SnapshotId};
 
 /// Top-level error type for all core operations.
 #[derive(Debug, Error)]
@@ -34,9 +34,58 @@ pub enum CoreError {
     #[error(transparent)]
     Lock(#[from] LockError),
 
+    /// Linker error.
+    #[error(transparent)]
+    Linker(#[from] LinkerError),
+
     /// A path is not valid UTF-8.
     #[error("path is not valid UTF-8: {0}")]
     NonUtf8Path(PathBuf),
+}
+
+/// Errors specific to the [`Linker`][crate::linker::Linker].
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum LinkerError {
+    /// The plan contains one or more [`ConflictReason`] entries and `force`
+    /// was not set.
+    #[error("plan has {} conflicts; rerun with --force to override", conflicts.len())]
+    ConflictsDetected {
+        /// `(target, reason)` for each conflicting item.
+        conflicts: Vec<(PathBuf, ConflictReason)>,
+    },
+
+    /// A previous in-progress transaction for the same profile is still open;
+    /// the user must run `archdots recover` before retrying.
+    #[error("orphaned in-progress transaction {id} — run `archdots recover`")]
+    OrphanedTransaction {
+        /// Id of the orphan journal entry.
+        id: JournalId,
+    },
+
+    /// Rollback was requested but no prior `Success` transaction exists for
+    /// the given profile.
+    #[error("no successful transaction to roll back for profile `{profile}`")]
+    NoTransactionToRollback {
+        /// Profile name that was queried.
+        profile: String,
+    },
+
+    /// Creation of a single symlink failed mid-apply; triggers full rollback.
+    #[error("link failed: {source_path} → {target}: {reason}")]
+    LinkFailed {
+        /// Source path inside the dotfile repo.
+        source_path: PathBuf,
+        /// Filesystem target that could not be linked.
+        target: PathBuf,
+        /// Human-readable reason from the underlying I/O error.
+        reason: String,
+    },
+
+    /// Defence-in-depth: a resolved source path escaped the dotfile repo.
+    /// Should never trigger because profile validation runs earlier.
+    #[error("source path escaped the dotfile repository")]
+    SourceOutsideRepo,
 }
 
 /// Errors that can occur in snapshot operations.
