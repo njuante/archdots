@@ -9,6 +9,7 @@
 
 pub mod detector;
 pub mod error;
+pub mod journal;
 pub mod profile;
 pub mod snapshot;
 

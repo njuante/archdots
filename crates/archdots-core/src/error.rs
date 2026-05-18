@@ -26,6 +26,10 @@ pub enum CoreError {
     #[error(transparent)]
     Snapshot(#[from] SnapshotError),
 
+    /// Journal error.
+    #[error(transparent)]
+    Journal(#[from] JournalError),
+
     /// A path is not valid UTF-8.
     #[error("path is not valid UTF-8: {0}")]
     NonUtf8Path(PathBuf),
@@ -92,6 +96,53 @@ pub enum DetectorError {
     /// programming error in the catalog file.
     #[error("failed to parse embedded dotfile catalog: {0}")]
     ParseCatalog(#[from] toml::de::Error),
+}
+
+/// Errors that can occur in journal operations.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum JournalError {
+    /// I/O error associated with a specific path.
+    #[error("I/O error at {path}: {source}")]
+    Io {
+        /// Path that triggered the error.
+        path: PathBuf,
+        /// Underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// A JSONL line could not be deserialized.
+    #[error("failed to deserialize journal line {line_number}: {source}")]
+    DeserializeLine {
+        /// 1-based line number in the journal file.
+        line_number: u64,
+        /// Underlying JSON parse error.
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// A journal entry exceeds the maximum number of link records.
+    #[error("too many links: found {found}, max is {max}")]
+    TooManyLinks {
+        /// Number of links found.
+        found: usize,
+        /// Maximum allowed.
+        max: usize,
+    },
+
+    /// The `schema_version` in an entry is newer than this build supports.
+    #[error("journal schema version {found} is newer than supported {supported}")]
+    SchemaTooNew {
+        /// Version found in the entry.
+        found: u32,
+        /// Maximum version this build supports.
+        supported: u32,
+    },
+
+    /// A `PathBuf` field contains non-UTF-8 bytes and cannot be serialized.
+    #[error("a path in the journal entry contains non-UTF-8 bytes")]
+    NonUtf8Path,
 }
 
 /// Errors specific to profile loading, saving, and validation.
