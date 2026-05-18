@@ -1,0 +1,418 @@
+# Known dotfile paths for archdots v0.1.
+#
+# Each [[entry]] describes one application.
+# - name:          unique application identifier
+# - paths:         config paths relative to $HOME (all are checked)
+# - category:      wm | bar | launcher | terminal | shell | editor |
+#                  prompt | compositor | notification | misc
+# - optional_deps: extra packages often needed alongside this app (may be empty)
+
+# ── Window managers ───────────────────────────────────────────────────────────
+
+[[entry]]
+name = "bspwm"
+paths = [".config/bspwm/bspwmrc"]
+category = "wm"
+optional_deps = ["sxhkd"]
+
+[[entry]]
+name = "sxhkd"
+paths = [".config/sxhkd/sxhkdrc"]
+category = "wm"
+optional_deps = []
+
+[[entry]]
+name = "i3"
+paths = [".config/i3/config", ".i3/config"]
+category = "wm"
+optional_deps = ["i3status", "i3lock"]
+
+[[entry]]
+name = "sway"
+paths = [".config/sway/config"]
+category = "wm"
+optional_deps = ["swaybar", "swaybg", "swaylock", "swayidle"]
+
+[[entry]]
+name = "hyprland"
+paths = [".config/hypr/hyprland.conf"]
+category = "wm"
+optional_deps = ["xdg-desktop-portal-hyprland"]
+
+[[entry]]
+name = "hyprpaper"
+paths = [".config/hypr/hyprpaper.conf"]
+category = "wm"
+optional_deps = []
+
+[[entry]]
+name = "openbox"
+paths = [".config/openbox/rc.xml", ".config/openbox/autostart"]
+category = "wm"
+optional_deps = ["obconf"]
+
+[[entry]]
+name = "xmonad"
+paths = [".xmonad/xmonad.hs", ".config/xmonad/xmonad.hs"]
+category = "wm"
+optional_deps = ["xmobar"]
+
+[[entry]]
+name = "qtile"
+paths = [".config/qtile/config.py"]
+category = "wm"
+optional_deps = []
+
+[[entry]]
+name = "awesome"
+paths = [".config/awesome/rc.lua"]
+category = "wm"
+optional_deps = []
+
+[[entry]]
+name = "leftwm"
+paths = [".config/leftwm/config.toml"]
+category = "wm"
+optional_deps = []
+
+[[entry]]
+name = "river"
+paths = [".config/river/init"]
+category = "wm"
+optional_deps = []
+
+[[entry]]
+name = "niri"
+paths = [".config/niri/config.kdl"]
+category = "wm"
+optional_deps = []
+
+# ── Bars ──────────────────────────────────────────────────────────────────────
+
+[[entry]]
+name = "polybar"
+paths = [".config/polybar/config.ini", ".config/polybar/config"]
+category = "bar"
+optional_deps = []
+
+[[entry]]
+name = "waybar"
+paths = [".config/waybar/config", ".config/waybar/config.jsonc", ".config/waybar/style.css"]
+category = "bar"
+optional_deps = []
+
+[[entry]]
+name = "i3status"
+paths = [".config/i3status/config", ".i3status.conf"]
+category = "bar"
+optional_deps = []
+
+[[entry]]
+name = "lemonbar"
+paths = [".config/lemonbar/lemonbar.sh"]
+category = "bar"
+optional_deps = []
+
+# ── Launchers ─────────────────────────────────────────────────────────────────
+
+[[entry]]
+name = "rofi"
+paths = [".config/rofi/config.rasi", ".config/rofi/config"]
+category = "launcher"
+optional_deps = []
+
+[[entry]]
+name = "wofi"
+paths = [".config/wofi/config", ".config/wofi/style.css"]
+category = "launcher"
+optional_deps = []
+
+[[entry]]
+name = "fuzzel"
+paths = [".config/fuzzel/fuzzel.ini"]
+category = "launcher"
+optional_deps = []
+
+[[entry]]
+name = "tofi"
+paths = [".config/tofi/config"]
+category = "launcher"
+optional_deps = []
+
+[[entry]]
+name = "ulauncher"
+paths = [".config/ulauncher/settings.json"]
+category = "launcher"
+optional_deps = []
+
+# ── Terminals ─────────────────────────────────────────────────────────────────
+
+[[entry]]
+name = "alacritty"
+paths = [".config/alacritty/alacritty.toml", ".config/alacritty/alacritty.yml"]
+category = "terminal"
+optional_deps = []
+
+[[entry]]
+name = "kitty"
+paths = [".config/kitty/kitty.conf"]
+category = "terminal"
+optional_deps = []
+
+[[entry]]
+name = "wezterm"
+paths = [".config/wezterm/wezterm.lua", ".wezterm.lua"]
+category = "terminal"
+optional_deps = []
+
+[[entry]]
+name = "foot"
+paths = [".config/foot/foot.ini"]
+category = "terminal"
+optional_deps = []
+
+[[entry]]
+name = "ghostty"
+paths = [".config/ghostty/config"]
+category = "terminal"
+optional_deps = []
+
+[[entry]]
+name = "urxvt"
+paths = [".Xresources"]
+category = "terminal"
+optional_deps = ["rxvt-unicode"]
+
+# ── Shells ────────────────────────────────────────────────────────────────────
+
+[[entry]]
+name = "bash"
+paths = [".bashrc", ".bash_profile", ".bash_aliases"]
+category = "shell"
+optional_deps = []
+
+[[entry]]
+name = "zsh"
+paths = [".zshrc", ".zshenv", ".zprofile"]
+category = "shell"
+optional_deps = []
+
+[[entry]]
+name = "fish"
+paths = [".config/fish/config.fish"]
+category = "shell"
+optional_deps = []
+
+[[entry]]
+name = "nushell"
+paths = [".config/nushell/config.nu", ".config/nushell/env.nu"]
+category = "shell"
+optional_deps = []
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+
+[[entry]]
+name = "neovim"
+paths = [".config/nvim/init.lua", ".config/nvim/init.vim"]
+category = "editor"
+optional_deps = []
+
+[[entry]]
+name = "vim"
+paths = [".vimrc", ".vim/vimrc"]
+category = "editor"
+optional_deps = []
+
+[[entry]]
+name = "emacs"
+paths = [".emacs.d/init.el", ".config/emacs/init.el", ".emacs"]
+category = "editor"
+optional_deps = []
+
+[[entry]]
+name = "helix"
+paths = [".config/helix/config.toml"]
+category = "editor"
+optional_deps = []
+
+[[entry]]
+name = "kakoune"
+paths = [".config/kak/kakrc"]
+category = "editor"
+optional_deps = []
+
+[[entry]]
+name = "micro"
+paths = [".config/micro/settings.json"]
+category = "editor"
+optional_deps = []
+
+# ── Prompts ───────────────────────────────────────────────────────────────────
+
+[[entry]]
+name = "starship"
+paths = [".config/starship.toml"]
+category = "prompt"
+optional_deps = []
+
+[[entry]]
+name = "powerlevel10k"
+paths = [".p10k.zsh"]
+category = "prompt"
+optional_deps = ["zsh"]
+
+[[entry]]
+name = "oh-my-posh"
+paths = [".config/oh-my-posh/config.toml", ".config/oh-my-posh/config.json"]
+category = "prompt"
+optional_deps = []
+
+# ── Compositors ───────────────────────────────────────────────────────────────
+
+[[entry]]
+name = "picom"
+paths = [".config/picom/picom.conf", ".config/picom.conf", ".picom.conf"]
+category = "compositor"
+optional_deps = []
+
+[[entry]]
+name = "compton"
+paths = [".config/compton.conf", ".compton.conf"]
+category = "compositor"
+optional_deps = []
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+
+[[entry]]
+name = "dunst"
+paths = [".config/dunst/dunstrc"]
+category = "notification"
+optional_deps = []
+
+[[entry]]
+name = "mako"
+paths = [".config/mako/config"]
+category = "notification"
+optional_deps = []
+
+[[entry]]
+name = "swaync"
+paths = [".config/swaync/config.json", ".config/swaync/style.css"]
+category = "notification"
+optional_deps = []
+
+[[entry]]
+name = "fnott"
+paths = [".config/fnott/fnott.ini"]
+category = "notification"
+optional_deps = []
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+
+[[entry]]
+name = "tmux"
+paths = [".tmux.conf", ".config/tmux/tmux.conf"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "htop"
+paths = [".config/htop/htoprc"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "btop"
+paths = [".config/btop/btop.conf"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "ranger"
+paths = [".config/ranger/rc.conf", ".config/ranger/rifle.conf"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "lf"
+paths = [".config/lf/lfrc"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "yazi"
+paths = [".config/yazi/yazi.toml", ".config/yazi/keymap.toml"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "fastfetch"
+paths = [".config/fastfetch/config.jsonc"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "neofetch"
+paths = [".config/neofetch/config.conf"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "gtk-3"
+paths = [".config/gtk-3.0/settings.ini"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "gtk-4"
+paths = [".config/gtk-4.0/settings.ini"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "qt5ct"
+paths = [".config/qt5ct/qt5ct.conf"]
+category = "misc"
+optional_deps = ["qt5ct"]
+
+[[entry]]
+name = "fontconfig"
+paths = [".config/fontconfig/fonts.conf"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "xinit"
+paths = [".xinitrc", ".xprofile"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "xresources"
+paths = [".Xresources", ".Xdefaults"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "zathura"
+paths = [".config/zathura/zathurarc"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "mpv"
+paths = [".config/mpv/mpv.conf", ".config/mpv/input.conf"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "git"
+paths = [".gitconfig", ".config/git/config"]
+category = "misc"
+optional_deps = []
+
+[[entry]]
+name = "ssh"
+paths = [".ssh/config"]
+category = "misc"
+optional_deps = []
