@@ -1,1 +1,5 @@
 /target/
+
+# AI tooling — local only, not for the public repo
+Claude.md
+.claude/
