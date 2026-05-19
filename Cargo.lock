@@ -96,6 +96,7 @@ dependencies = [
  "humantime",
  "owo-colors",
  "predicates",
+ "serde_json",
  "similar",
  "tempfile",
  "time",

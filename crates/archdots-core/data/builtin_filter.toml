@@ -1,0 +1,27 @@
+# Names the validator will not treat as dependency mentions.
+#
+# Two categories:
+#   - shell builtins (cd, export, alias, ...) — never an external binary
+#   - "assumed base" — coreutils/util-linux/grep/sed/awk/git/etc., shipped
+#     by Arch's base packages, almost never a user-visible dep
+#
+# This is intentionally small. Anything that is plausibly missing on a
+# stripped-down install (e.g. `tmux`, `python`) does NOT belong here.
+
+builtins = [
+  "cd", "export", "source", ".", "eval", "unset", "set", "alias",
+  "unalias", "local", "readonly", "declare", "typeset", "return",
+  "exit", "shift", "trap", "umask", "wait", ":", "[", "[[", "pwd",
+  "echo", "printf", "test", "true", "false", "kill", "read", "type",
+  "command", "hash", "history", "exec",
+]
+
+base = [
+  "ls", "cp", "mv", "rm", "cat", "grep", "egrep", "fgrep", "sed", "awk",
+  "find", "head", "tail", "wc", "sort", "uniq", "tr", "cut", "xargs",
+  "chmod", "chown", "ln", "mkdir", "rmdir", "tar", "gzip", "gunzip",
+  "which", "env", "date", "df", "du", "mount", "umount", "ps", "top",
+  "pgrep", "pkill", "id", "whoami", "uname", "hostname", "ssh", "scp",
+  "rsync", "git", "bash", "sh", "vim", "nano", "less", "more", "tee",
+  "basename", "dirname", "realpath", "readlink", "sleep", "yes",
+]

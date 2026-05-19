@@ -16,6 +16,7 @@ pub mod packages;
 pub mod parsers;
 pub mod profile;
 pub mod snapshot;
+pub mod validator;
 
 pub use error::CoreError;
 

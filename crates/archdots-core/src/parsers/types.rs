@@ -1,9 +1,11 @@
+use serde::Serialize;
+
 /// One mention of a binary in a config file.
 ///
 /// Parsers emit one `Mention` per occurrence — the validator deduplicates
 /// downstream. Line numbers are 1-based and refer to the first physical line
 /// of the logical line (after continuation joining).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Mention {
     /// The binary name (basename, no path components, no arguments).
     pub binary: String,
@@ -14,8 +16,9 @@ pub struct Mention {
 }
 
 /// Syntactic context in which a binary was mentioned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
+#[serde(rename_all = "snake_case")]
 pub enum MentionSource {
     /// `exec X &` or `X &` or `pgrep … || X &` in a bspwmrc.
     BspwmExec,
@@ -38,8 +41,9 @@ pub enum MentionSource {
 }
 
 /// Selects which parser to run on a config file's contents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
+#[serde(rename_all = "snake_case")]
 pub enum ParserKind {
     /// `bspwmrc` — bspwm window manager config.
     Bspwm,

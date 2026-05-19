@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use once_cell::sync::OnceCell;
+use serde::Serialize;
 
 use crate::error::PackageError;
 
@@ -31,8 +32,9 @@ pub enum PkgSource {
 }
 
 /// Detected AUR helper.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
+#[serde(rename_all = "lowercase")]
 pub enum AurHelper {
     /// `paru` is installed.
     Paru,

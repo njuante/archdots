@@ -101,6 +101,23 @@ enum Commands {
         #[arg(long, short)]
         yes: bool,
     },
+    /// Validate dependencies declared in a profile against what is installed.
+    Check {
+        /// Profile name to validate.
+        profile: String,
+        /// Treat implicit-missing as required-missing for exit-code purposes.
+        #[arg(long)]
+        strict: bool,
+        /// Fall back to `pacman -F` for binaries not in the curated table.
+        #[arg(long)]
+        deep: bool,
+        /// Emit machine-readable JSON to stdout.
+        #[arg(long)]
+        json: bool,
+        /// Show all mentions for implicit entries (default: first 3 only).
+        #[arg(long)]
+        verbose: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -195,5 +212,22 @@ fn main() -> Result<()> {
         },
 
         Commands::Recover { profile, yes } => cmd::recover::run(profile.as_deref(), yes),
+
+        Commands::Check {
+            profile,
+            strict,
+            deep,
+            json,
+            verbose,
+        } => {
+            let code = cmd::check::run(cmd::check::CheckArgs {
+                profile,
+                strict,
+                deep,
+                json,
+                verbose,
+            })?;
+            std::process::exit(code);
+        }
     }
 }
