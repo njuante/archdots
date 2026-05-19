@@ -26,14 +26,10 @@ pub fn run(profile_name: &str) -> Result<()> {
     for result in profile.resolved_entries(&home, &ctx) {
         let (_entry, src, tgt) = result?;
 
-        let meta = tgt.symlink_metadata();
-
-        if meta.is_err() {
+        let Ok(meta) = tgt.symlink_metadata() else {
             println!("{}: missing — would create symlink", tgt.display());
             continue;
-        }
-
-        let meta = meta.unwrap();
+        };
 
         if meta.file_type().is_symlink() {
             let dest = fs::read_link(&tgt)
