@@ -112,7 +112,8 @@ fn check_exits_3_when_pacman_missing() {
     let exit_code = output.status.code().unwrap_or(-1);
 
     assert_eq!(
-        exit_code, 3,
+        exit_code,
+        3,
         "expected exit 3 when pacman is missing; got {exit_code}.\n\
          stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
