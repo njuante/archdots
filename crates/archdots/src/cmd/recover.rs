@@ -6,6 +6,7 @@ use archdots_core::{
         Journal, JournalAction, JournalEntry, JournalId, JournalStatus, LinkOutcome, LinkRecord,
         PriorState,
     },
+    lock::ApplyLock,
     snapshot::{RestoreOptions, SnapshotManager},
 };
 use time::OffsetDateTime;
@@ -18,6 +19,12 @@ pub fn run(profile_filter: Option<&str>, yes: bool) -> Result<()> {
 
     let snapshots = SnapshotManager::open(&data_home)?;
     let journal = Journal::open(&state_home)?;
+
+    // Acquire the apply lock before scanning for orphans. Without the lock,
+    // recover could run concurrently with an apply and mistake a live
+    // InProgress entry for an orphan, corrupting the filesystem state.
+    let _lock = ApplyLock::acquire(&state_home)
+        .context("failed to acquire apply lock (another apply may be running)")?;
 
     let mut orphans = journal
         .orphaned_in_progress()

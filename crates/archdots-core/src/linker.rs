@@ -222,13 +222,15 @@ impl<'a> Linker<'a> {
             });
         }
 
-        // Refuse if any unrelated orphan for *this* profile is open.
+        let _lock = ApplyLock::acquire(&opts.state_home)?;
+
+        // Orphan check is intentionally AFTER lock acquire. A concurrent apply
+        // that holds the lock would have a live InProgress entry; checking before
+        // the lock would misidentify it as orphaned and abort with the wrong error.
         let orphans = self.journal.orphaned_in_progress()?;
         if let Some(o) = orphans.into_iter().find(|e| e.profile == plan.profile) {
             return Err(LinkerError::OrphanedTransaction { id: o.id }.into());
         }
-
-        let _lock = ApplyLock::acquire(&opts.state_home)?;
 
         // 1. Initial InProgress entry — no snapshot yet.
         let initial_id = JournalId::new();
@@ -420,6 +422,13 @@ impl<'a> Linker<'a> {
                 })?;
 
         let _lock = ApplyLock::acquire(&opts.state_home)?;
+
+        // Refuse to roll back if there is an orphaned transaction for this
+        // profile — the user must run `archdots recover` first.
+        let orphans = self.journal.orphaned_in_progress()?;
+        if let Some(o) = orphans.into_iter().find(|e| e.profile == profile) {
+            return Err(LinkerError::OrphanedTransaction { id: o.id }.into());
+        }
 
         let initial_id = JournalId::new();
         self.journal.append(&JournalEntry {
@@ -1300,6 +1309,102 @@ mod tests {
         let last = entries.last().unwrap();
         assert_eq!(last.status, JournalStatus::Partial);
         assert!(last.snapshot_id.is_some());
+    }
+
+    // ── ORPHAN CHECK ORDERING ────────────────────────────────────────────────
+
+    /// Regression test: a live apply (which holds the lock) must NOT be
+    /// misidentified as an orphaned transaction.
+    ///
+    /// With the correct ordering (orphan check AFTER lock acquire):
+    ///   - While A holds the lock, B fails with Lock::Busy — not OrphanedTransaction.
+    ///   - After A releases the lock, the InProgress entry is a genuine orphan,
+    ///     so B fails with OrphanedTransaction.
+    #[test]
+    fn apply_orphan_check_is_inside_lock() {
+        let e = env();
+        let src = e.home.path().join("src");
+        write_file(&src, b"x");
+        let tgt = e.home.path().join("tgt");
+
+        // Thread A manually acquires the lock and injects an InProgress entry,
+        // simulating a process that is mid-apply.
+        let state_home = e.state.path().to_path_buf();
+        let state_home2 = state_home.clone();
+        let journal_path = e.state.path().join("archdots").join("journal.jsonl");
+
+        let (tx_ready, rx_ready) = std::sync::mpsc::channel::<()>();
+        let (tx_release, rx_release) = std::sync::mpsc::channel::<()>();
+
+        let handle = std::thread::spawn(move || {
+            // Acquire lock first, then write InProgress entry.
+            let _lock = ApplyLock::acquire(&state_home2).unwrap();
+            // Write InProgress entry directly to simulate a mid-apply state.
+            let j = Journal::open(&state_home2).unwrap();
+            j.append(&JournalEntry {
+                schema_version: 1,
+                id: JournalId::new(),
+                ts: time::OffsetDateTime::now_utc(),
+                profile: "p".to_owned(),
+                action: JournalAction::Apply,
+                snapshot_id: None,
+                links: Vec::new(),
+                status: JournalStatus::InProgress,
+                error: None,
+                supersedes: None,
+            })
+            .unwrap();
+            tx_ready.send(()).unwrap();
+            rx_release.recv().unwrap();
+            // _lock dropped here, releasing the flock.
+        });
+
+        rx_ready.recv().unwrap();
+
+        // Thread B tries to apply while A holds the lock.
+        // Expected: Lock::Busy — NOT OrphanedTransaction.
+        let linker = Linker::new(&e.snaps, &e.journal);
+        let plan = linker
+            .plan(
+                "p",
+                &[LinkSpec {
+                    source: src.clone(),
+                    target: tgt.clone(),
+                }],
+                e.home.path(),
+            )
+            .unwrap();
+        let result_while_locked = linker.apply(plan, opts(e.home.path(), &state_home));
+        assert!(
+            matches!(result_while_locked, Err(CoreError::Lock(_))),
+            "while A holds the lock, B must get Lock::Busy, got {result_while_locked:?}"
+        );
+
+        // Release A's lock.
+        tx_release.send(()).unwrap();
+        handle.join().unwrap();
+
+        // Now the InProgress entry is a genuine orphan (no process holds the lock).
+        // B should now fail with OrphanedTransaction, not Lock::Busy.
+        let _ = journal_path; // ensure variable lives long enough for the comment
+        let plan2 = linker
+            .plan(
+                "p",
+                &[LinkSpec {
+                    source: src,
+                    target: tgt,
+                }],
+                e.home.path(),
+            )
+            .unwrap();
+        let result_after_release = linker.apply(plan2, opts(e.home.path(), &state_home));
+        assert!(
+            matches!(
+                result_after_release,
+                Err(CoreError::Linker(LinkerError::OrphanedTransaction { .. }))
+            ),
+            "after A releases the lock, B must get OrphanedTransaction, got {result_after_release:?}"
+        );
     }
 
     // ── helper accessors on Env ──────────────────────────────────────────────
