@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use crate::{journal::JournalId, linker::ConflictReason, snapshot::SnapshotId};
+
 /// Top-level error type for all core operations.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -19,6 +21,122 @@ pub enum CoreError {
     /// Detector catalog parse error.
     #[error(transparent)]
     Detector(#[from] DetectorError),
+
+    /// Snapshot error.
+    #[error(transparent)]
+    Snapshot(#[from] SnapshotError),
+
+    /// Journal error.
+    #[error(transparent)]
+    Journal(#[from] JournalError),
+
+    /// Lock error.
+    #[error(transparent)]
+    Lock(#[from] LockError),
+
+    /// Linker error.
+    #[error(transparent)]
+    Linker(#[from] LinkerError),
+
+    /// A path is not valid UTF-8.
+    #[error("path is not valid UTF-8: {0}")]
+    NonUtf8Path(PathBuf),
+}
+
+/// Errors specific to the [`Linker`][crate::linker::Linker].
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum LinkerError {
+    /// The plan contains one or more [`ConflictReason`] entries and `force`
+    /// was not set.
+    #[error("plan has {} conflicts; rerun with --force to override", conflicts.len())]
+    ConflictsDetected {
+        /// `(target, reason)` for each conflicting item.
+        conflicts: Vec<(PathBuf, ConflictReason)>,
+    },
+
+    /// A previous in-progress transaction for the same profile is still open;
+    /// the user must run `archdots recover` before retrying.
+    #[error("orphaned in-progress transaction {id} — run `archdots recover`")]
+    OrphanedTransaction {
+        /// Id of the orphan journal entry.
+        id: JournalId,
+    },
+
+    /// Rollback was requested but no prior `Success` transaction exists for
+    /// the given profile.
+    #[error("no successful transaction to roll back for profile `{profile}`")]
+    NoTransactionToRollback {
+        /// Profile name that was queried.
+        profile: String,
+    },
+
+    /// Creation of a single symlink failed mid-apply; triggers full rollback.
+    #[error("link failed: {source_path} → {target}: {reason}")]
+    LinkFailed {
+        /// Source path inside the dotfile repo.
+        source_path: PathBuf,
+        /// Filesystem target that could not be linked.
+        target: PathBuf,
+        /// Human-readable reason from the underlying I/O error.
+        reason: String,
+    },
+
+    /// Defence-in-depth: a resolved source path escaped the dotfile repo.
+    /// Should never trigger because profile validation runs earlier.
+    #[error("source path escaped the dotfile repository")]
+    SourceOutsideRepo,
+}
+
+/// Errors that can occur in snapshot operations.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum SnapshotError {
+    /// I/O error associated with a specific path.
+    #[error("I/O error at {path}: {source}")]
+    Io {
+        /// Path that triggered the error.
+        path: PathBuf,
+        /// Underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The tarball archive is corrupt or unreadable.
+    #[error("snapshot {0} tarball is corrupt")]
+    TarballCorrupt(SnapshotId),
+
+    /// The sidecar manifest hash does not match the internal manifest hash.
+    #[error("manifest mismatch: sidecar hash {sidecar_hash} != internal hash {internal_hash}")]
+    ManifestMismatch {
+        /// Hash from the sidecar manifest.
+        sidecar_hash: String,
+        /// Hash from the embedded manifest inside the tarball.
+        internal_hash: String,
+    },
+
+    /// A target file's sha256 does not match what the manifest records.
+    #[error("checksum mismatch for {path}: expected {expected}, got {actual}")]
+    ChecksumMismatch {
+        /// The expected sha256 hex string from the manifest.
+        expected: String,
+        /// The actual sha256 hex string computed from the file.
+        actual: String,
+        /// Path of the file that failed verification.
+        path: PathBuf,
+    },
+
+    /// The requested snapshot does not exist.
+    #[error("snapshot not found: {0}")]
+    NotFound(SnapshotId),
+
+    /// The archive has an invalid structure or unsupported format.
+    #[error("invalid archive: {0}")]
+    InvalidArchive(String),
+
+    /// JSON serialization/deserialization error.
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 /// Errors that can occur when initialising the dotfile [`Detector`][crate::detector::Detector].
@@ -31,6 +149,53 @@ pub enum DetectorError {
     /// programming error in the catalog file.
     #[error("failed to parse embedded dotfile catalog: {0}")]
     ParseCatalog(#[from] toml::de::Error),
+}
+
+/// Errors that can occur in journal operations.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum JournalError {
+    /// I/O error associated with a specific path.
+    #[error("I/O error at {path}: {source}")]
+    Io {
+        /// Path that triggered the error.
+        path: PathBuf,
+        /// Underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// A JSONL line could not be deserialized.
+    #[error("failed to deserialize journal line {line_number}: {source}")]
+    DeserializeLine {
+        /// 1-based line number in the journal file.
+        line_number: u64,
+        /// Underlying JSON parse error.
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// A journal entry exceeds the maximum number of link records.
+    #[error("too many links: found {found}, max is {max}")]
+    TooManyLinks {
+        /// Number of links found.
+        found: usize,
+        /// Maximum allowed.
+        max: usize,
+    },
+
+    /// The `schema_version` in an entry is newer than this build supports.
+    #[error("journal schema version {found} is newer than supported {supported}")]
+    SchemaTooNew {
+        /// Version found in the entry.
+        found: u32,
+        /// Maximum version this build supports.
+        supported: u32,
+    },
+
+    /// A `PathBuf` field contains non-UTF-8 bytes and cannot be serialized.
+    #[error("a path in the journal entry contains non-UTF-8 bytes: {0}")]
+    NonUtf8Path(PathBuf),
 }
 
 /// Errors specific to profile loading, saving, and validation.
@@ -99,4 +264,32 @@ pub enum ProfileError {
         /// The full unexpanded target string for context.
         target: String,
     },
+}
+
+/// Errors that can occur when acquiring or releasing the apply lock.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum LockError {
+    /// I/O error associated with a specific path.
+    #[error("I/O error at {path}: {source}")]
+    Io {
+        /// Path that triggered the error.
+        path: PathBuf,
+        /// Underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The lock is currently held by another process.
+    ///
+    /// `pid` is `None` when the lockfile exists but contains no readable PID.
+    #[error("lock is busy (held by pid {pid:?})")]
+    Busy {
+        /// PID of the lock holder, if readable from the lockfile.
+        pid: Option<u32>,
+    },
+
+    /// `acquire_blocking` did not obtain the lock before the deadline.
+    #[error("timed out waiting for apply lock")]
+    Timeout,
 }

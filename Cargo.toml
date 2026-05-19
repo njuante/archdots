@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["njuante <juan.nunez1@alu.uclm.es>"]
@@ -29,12 +29,20 @@ tempfile = "3"
 sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
+ulid = { version = "1", features = ["serde"] }
+time = { version = "0.3", features = ["formatting", "parsing", "serde", "serde-well-known", "macros"] }
+serde_json = "1"
+rustix = { version = "0.38", features = ["fs"] }
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.28"
 crossterm = "0.28"
 color-eyre = "0.6"
 assert_cmd = "2"
 predicates = "3"
+similar = "2"
+owo-colors = "4"
+humantime = "2"
+byte-unit = "5"
 
 [profile.release]
 lto = "thin"

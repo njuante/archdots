@@ -84,6 +84,7 @@ pub struct WmSpec {
 
 /// Supported window managers.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 #[serde(rename_all = "lowercase")]
 pub enum WmKind {
     /// bspwm
@@ -121,6 +122,7 @@ pub struct FileEntry {
 
 /// How a [`FileEntry`] is placed at its target location.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 #[serde(rename_all = "lowercase")]
 pub enum LinkMode {
     /// Create a symbolic link (default).

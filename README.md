@@ -4,15 +4,15 @@ Dotfile manager for Arch Linux ricers.
 
 ![CI](https://github.com/njuante/archdots/actions/workflows/ci.yml/badge.svg)
 
-> archdots is in early development (v0.1.x). Only `init` and `profile` commands work today.
+> archdots is in early development (v0.2.x). Core apply/rollback pipeline is functional. CLI offers init, profile, apply, diff, rollback, history, snapshots, and recover. TUI and dependency validation are upcoming phases.
 
 ## Roadmap
 
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Detection, profiles, CLI scaffolding | done |
-| 2 | Atomic apply with rollback | in progress |
-| 3 | Dependency validation | planned |
+| 2 | Atomic apply with rollback, snapshots, journal, recovery | done |
+| 3 | Dependency validation | in progress / planned |
 | 4 | TUI | planned |
 | 5 | README export | planned |
 
@@ -48,9 +48,77 @@ archdots profile delete my-rice --yes   # skip prompt
 Profiles are stored as TOML files under `$XDG_CONFIG_HOME/archdots/profiles/`
 (defaults to `~/.config/archdots/profiles/`).
 
+**`archdots apply <profile>`** — deploy a profile's dotfiles to their target paths. Always run with `--dry-run` first to review what would change:
+
+```sh
+archdots apply my-rice --dry-run
+archdots apply my-rice
+```
+
+**`archdots diff <profile>`** — show the diff between the profile's sources and what is currently on disk:
+
+```sh
+archdots diff my-rice
+```
+
+**`archdots rollback`** — restore the state captured by the pre-apply snapshot:
+
+```sh
+archdots rollback
+archdots rollback --to <snapshot-id>
+```
+
+**`archdots history`** — list all apply operations recorded in the journal:
+
+```sh
+archdots history
+```
+
+**`archdots snapshots list`** — list all saved snapshots:
+
+```sh
+archdots snapshots list
+```
+
+**`archdots snapshots show <id>`** — inspect the contents of a snapshot:
+
+```sh
+archdots snapshots show 20240501-120000
+```
+
+**`archdots snapshots prune`** — remove old snapshots beyond the configured retention limit:
+
+```sh
+archdots snapshots prune
+archdots snapshots prune --keep 5
+```
+
+**`archdots recover`** — attempt recovery after a failed or interrupted apply:
+
+```sh
+archdots recover
+```
+
+## Safety guarantees
+
+- **Atomic apply**: a snapshot of all target files is taken before any write occurs; the journal records every operation so a partial apply can be detected and reversed.
+- **Rollback restores content and Unix permissions**: file mode bits are captured in the snapshot and restored verbatim on rollback.
+- **Process lockfile prevents concurrent applies**: a lockfile under the archdots data directory ensures only one apply runs at a time.
+- **Conflict detection before touching the filesystem**: archdots checks for conflicts between the profile and current disk state before writing any file.
+- **`--dry-run` touches nothing**: passing `--dry-run` to `apply` prints every planned action without modifying the filesystem.
+
 ## Install
 
 Not yet on crates.io. Build from source:
+
+```sh
+git clone https://github.com/njuante/archdots
+cd archdots
+cargo build --release
+# binary at target/release/archdots
+```
+
+Or install directly with Cargo:
 
 ```sh
 cargo install --git https://github.com/njuante/archdots archdots

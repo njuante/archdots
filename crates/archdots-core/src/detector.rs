@@ -48,6 +48,7 @@ struct KnownEntry {
 
 /// Application category used to group dotfiles.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 #[serde(rename_all = "lowercase")]
 pub enum Category {
     /// Tiling / floating window manager.
