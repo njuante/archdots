@@ -187,12 +187,15 @@ pub struct JournalEntry {
 
 fn validate_entry_paths(entry: &JournalEntry) -> Result<(), CoreError> {
     for link in &entry.links {
-        if link.source.to_str().is_none() || link.target.to_str().is_none() {
-            return Err(JournalError::NonUtf8Path.into());
+        if link.source.to_str().is_none() {
+            return Err(JournalError::NonUtf8Path(link.source.clone()).into());
+        }
+        if link.target.to_str().is_none() {
+            return Err(JournalError::NonUtf8Path(link.target.clone()).into());
         }
         if let PriorState::Symlink { ref points_to } = link.prior_state {
             if points_to.to_str().is_none() {
-                return Err(JournalError::NonUtf8Path.into());
+                return Err(JournalError::NonUtf8Path(points_to.clone()).into());
             }
         }
     }

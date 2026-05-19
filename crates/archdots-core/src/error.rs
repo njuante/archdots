@@ -194,8 +194,8 @@ pub enum JournalError {
     },
 
     /// A `PathBuf` field contains non-UTF-8 bytes and cannot be serialized.
-    #[error("a path in the journal entry contains non-UTF-8 bytes")]
-    NonUtf8Path,
+    #[error("a path in the journal entry contains non-UTF-8 bytes: {0}")]
+    NonUtf8Path(PathBuf),
 }
 
 /// Errors specific to profile loading, saving, and validation.
