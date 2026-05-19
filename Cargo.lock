@@ -108,6 +108,7 @@ name = "archdots-core"
 version = "0.2.0"
 dependencies = [
  "flate2",
+ "once_cell",
  "rustix 0.38.44",
  "serde",
  "serde_json",
