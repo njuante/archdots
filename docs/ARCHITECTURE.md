@@ -85,3 +85,86 @@ load-bearing decisions so the rationale is greppable from
 - A new `archdots recover` subcommand is required before Phase 2 ships.
 - `--dry-run` is read-only and takes **no** lock (not even shared) — it
   builds a `LinkPlan` from per-path `lstat`s and cannot tear.
+
+## ADR-003 — Dependency validation: Arch-only, struct, lenient parsing (Fase 3)
+
+**Context:** Phase 3 introduces `archdots check <profile>`: it reports
+which packages a profile needs, which are installed, and which are
+missing. The full design lives in [`PHASE_3_DESIGN.md`](./PHASE_3_DESIGN.md).
+This ADR records the seven load-bearing decisions so the rationale is
+greppable from `ARCHITECTURE.md` without opening the full design doc.
+
+1. **Arch only; no `trait PackageDB`.** v0.3 hard-codes `pacman` in a
+   concrete `PackageDB` struct. Multi-distro support was rejected as
+   premature abstraction: archdots is brand-coded as Arch-only, and a
+   neutral trait would either leak distro concerns or paper over them.
+   Refactoring to a trait if a real second-distro user appears later is
+   a bounded refactor across a handful of callers.
+
+2. **`CommandRunner` trait for subprocess testability.** `PackageDB`
+   stores `Box<dyn CommandRunner>`. Production uses `SystemRunner`
+   (real `std::process::Command`); tests inject `MockRunner` (lives in
+   `crates/archdots-core/tests/`, not in `src/`). This is orthogonal to
+   distro: the trait abstracts the *subprocess*, not the *package
+   manager*. No `ARCHDOTS_RUNNER` env var or production-side feature
+   flag for tests — every test uses `with_runner` directly.
+
+3. **Per-format parsers, no generic engine.** Five parsers
+   (`Bspwm`, `Sxhkd`, `Hyprland`, `I3Sway`, `Shell`) share two helpers
+   (comment stripping, line-continuation joining) but each owns its
+   syntax-specific extraction. A table-driven engine would either be
+   too rigid (Hyprland's `bind = ..., exec, X` needs structured field
+   selection) or too configurable (mini-DSL nobody maintains).
+   `bspc rule` lines are explicitly **not** parsed: they reference X11
+   class names, not binaries.
+
+4. **Curated binary → package table + `--deep` fallback.** ~40 entries
+   in `data/binary_providers.toml` (embedded via `include_str!`) cover
+   the common ricing case. Unknown binaries return
+   `ProviderHit::Unknown` unless `--deep` is passed, in which case
+   `pacman -F <binary>` is consulted. `pacman -F` requires the user to
+   have run `pacman -Fy` once as root; archdots **never** runs that
+   command itself. A `data/builtin_filter.toml` of ~60 names (shell
+   builtins + always-installed base utilities) prevents shell-config
+   parsing from drowning the report in noise.
+
+5. **Parsers preserve every mention; the validator groups.** Parsers
+   emit one `Mention` per occurrence, never deduplicating. The
+   `Validator` is the layer that groups by binary, deduplicates, and
+   constructs one `DepEntry` per package — keeping all source
+   locations attached for the `--verbose` report. This shifts the
+   policy of "what is a distinct dependency?" out of parsers (which
+   are dumb) and into a single, testable place.
+
+6. **JSON output is a stable API from v0.3.0.** `archdots check
+   --json` carries `schema_version: 1`. Versioning is *per-output*,
+   independent of crate semver: the crate can move 0.3 → 1.0 with
+   `schema_version` staying at `1` as long as the JSON shape is
+   backwards-compatible. Additive changes stay on v1; breaking
+   changes bump to v2. Downstream CI tooling may rely on this.
+
+7. **Exit codes `0/1/2/3` with strict precedence.** `0` = all required
+   installed; `1` = required missing (or implicit missing under
+   `--strict`); `2` = optional or implicit missing without `--strict`;
+   `3` = indeterminate (pacman absent, db locked, profile broken).
+   Precedence `3 > 1 > 2 > 0`. Profile-resolution errors (e.g.
+   `ProfileError::UnknownEnvVar` in a target path) propagate as
+   `ValidatorError::Profile` and exit `3`.
+
+**Consequences:**
+
+- New data files in `archdots-core`:
+  `data/binary_providers.toml`, `data/builtin_filter.toml`.
+- `data/known_dotfiles.toml` gains an optional `parser` field
+  (`Option<ParserKind>`). Existing entries without it stay valid —
+  `infer_kind` simply returns `None` for paths under those entries.
+- A new public method `Detector::parser_for(&Path) -> Option<ParserKind>`
+  exposes catalog-driven parser inference to the validator without
+  making `KnownEntry` public.
+- A new `archdots check` subcommand with flags `--json`, `--strict`,
+  `--deep`, `--verbose`.
+- No new heavyweight dependencies — `PackageDB` uses
+  `std::process::Command` plus the existing serde stack.
+- CI continues to run on Ubuntu and never invokes `pacman`. One
+  `#[ignore]`d integration test exercises real `pacman` on Arch hosts,
+  same pattern as Phase 2's cross-process lock test.
