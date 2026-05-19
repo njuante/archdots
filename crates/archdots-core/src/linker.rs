@@ -397,7 +397,7 @@ impl<'a> Linker<'a> {
     /// - [`LinkerError::NoTransactionToRollback`] if the profile has no
     ///   prior `Success` entry.
     /// - [`crate::error::LockError::Busy`] / snapshot / journal errors.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
     pub fn rollback(&self, profile: &str, opts: ApplyOptions) -> Result<ApplyReport, CoreError> {
         // Find latest Apply/Success entry for the profile (forward scan;
         // last write wins).
@@ -1319,9 +1319,9 @@ mod tests {
     /// misidentified as an orphaned transaction.
     ///
     /// With the correct ordering (orphan check AFTER lock acquire):
-    ///   - While A holds the lock, B fails with Lock::Busy — not OrphanedTransaction.
-    ///   - After A releases the lock, the InProgress entry is a genuine orphan,
-    ///     so B fails with OrphanedTransaction.
+    ///   - While A holds the lock, B fails with `Lock::Busy` — not `OrphanedTransaction`.
+    ///   - After A releases the lock, the `InProgress` entry is a genuine orphan,
+    ///     so B fails with `OrphanedTransaction`.
     #[test]
     fn apply_orphan_check_is_inside_lock() {
         let e = env();

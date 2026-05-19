@@ -948,12 +948,12 @@ fn apply_restore_entry(
             })?;
             if let Some(mode) = entry.mode {
                 use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(abs_path, fs::Permissions::from_mode(mode)).map_err(
-                    |e| SnapshotError::Io {
+                fs::set_permissions(abs_path, fs::Permissions::from_mode(mode)).map_err(|e| {
+                    SnapshotError::Io {
                         path: abs_path.to_owned(),
                         source: e,
-                    },
-                )?;
+                    }
+                })?;
             }
         }
         TargetKind::File => {
@@ -983,12 +983,12 @@ fn apply_restore_entry(
             })?;
             if let Some(mode) = entry.mode {
                 use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(abs_path, fs::Permissions::from_mode(mode)).map_err(
-                    |e| SnapshotError::Io {
+                fs::set_permissions(abs_path, fs::Permissions::from_mode(mode)).map_err(|e| {
+                    SnapshotError::Io {
                         path: abs_path.to_owned(),
                         source: e,
-                    },
-                )?;
+                    }
+                })?;
             }
             fsync_dir(parent)?;
         }
