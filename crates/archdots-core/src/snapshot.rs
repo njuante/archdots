@@ -934,12 +934,24 @@ fn apply_restore_entry(
                 path: abs_path.to_owned(),
                 source: e,
             })?;
+            // chmod(2) on a symlink on Linux operates on the symlink target, not the
+            // symlink itself (lchmod is not supported). Mode bits for symlinks are
+            // meaningless here; skip.
         }
         TargetKind::Dir => {
             fs::create_dir_all(abs_path).map_err(|e| SnapshotError::Io {
                 path: abs_path.to_owned(),
                 source: e,
             })?;
+            if let Some(mode) = entry.mode {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(abs_path, fs::Permissions::from_mode(mode)).map_err(
+                    |e| SnapshotError::Io {
+                        path: abs_path.to_owned(),
+                        source: e,
+                    },
+                )?;
+            }
         }
         TargetKind::File => {
             let key = entry.path.trim_start_matches('/');
@@ -966,6 +978,15 @@ fn apply_restore_entry(
                 path: abs_path.to_owned(),
                 source: e.error,
             })?;
+            if let Some(mode) = entry.mode {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(abs_path, fs::Permissions::from_mode(mode)).map_err(
+                    |e| SnapshotError::Io {
+                        path: abs_path.to_owned(),
+                        source: e,
+                    },
+                )?;
+            }
             fsync_dir(parent)?;
         }
     }
@@ -1610,5 +1631,87 @@ mod tests {
             })
             .unwrap();
         assert_ne!(s1.id, s2.id);
+    }
+
+    // ── Mode bits preserved on file restore ──────────────────────────────────
+
+    #[test]
+    fn restore_preserves_mode_bits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = TempDir::new().unwrap();
+        let (_data, mgr) = make_manager();
+
+        for &mode in &[0o600u32, 0o755u32] {
+            let f = write_file(home.path(), &format!("file_{mode:o}"), b"content");
+            fs::set_permissions(&f, fs::Permissions::from_mode(mode)).unwrap();
+
+            let snap = mgr
+                .create(CreateRequest {
+                    profile: "p",
+                    trigger: SnapshotTrigger::Manual,
+                    targets: &[f.clone()],
+                })
+                .unwrap();
+
+            // Overwrite with different mode.
+            fs::write(&f, b"changed").unwrap();
+            fs::set_permissions(&f, fs::Permissions::from_mode(0o644)).unwrap();
+
+            mgr.restore(
+                &snap.id,
+                RestoreOptions {
+                    dry_run: false,
+                    continue_on_error: false,
+                },
+            )
+            .unwrap();
+
+            let restored_mode = fs::symlink_metadata(&f).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                restored_mode, mode,
+                "mode 0o{mode:o} not preserved after restore (got 0o{restored_mode:o})"
+            );
+        }
+    }
+
+    // ── Mode bits preserved on directory restore ──────────────────────────────
+
+    #[test]
+    fn restore_preserves_mode_bits_for_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = TempDir::new().unwrap();
+        let (_data, mgr) = make_manager();
+
+        let dir = home.path().join("private_dir");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let snap = mgr
+            .create(CreateRequest {
+                profile: "p",
+                trigger: SnapshotTrigger::Manual,
+                targets: &[dir.clone()],
+            })
+            .unwrap();
+
+        // Change permissions.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        mgr.restore(
+            &snap.id,
+            RestoreOptions {
+                dry_run: false,
+                continue_on_error: false,
+            },
+        )
+        .unwrap();
+
+        let restored_mode = fs::symlink_metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            restored_mode, 0o700,
+            "directory mode 0o700 not preserved after restore (got 0o{restored_mode:o})"
+        );
     }
 }
