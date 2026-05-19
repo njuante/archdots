@@ -13,6 +13,7 @@ pub mod journal;
 pub mod linker;
 pub mod lock;
 pub mod packages;
+pub mod parsers;
 pub mod profile;
 pub mod snapshot;
 
