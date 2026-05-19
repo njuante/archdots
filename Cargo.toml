@@ -39,6 +39,10 @@ crossterm = "0.28"
 color-eyre = "0.6"
 assert_cmd = "2"
 predicates = "3"
+similar = "2"
+owo-colors = "4"
+humantime = "2"
+byte-unit = "5"
 
 [profile.release]
 lto = "thin"

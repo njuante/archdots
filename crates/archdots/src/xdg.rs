@@ -39,3 +39,31 @@ pub fn config_home() -> Result<PathBuf> {
 pub fn profiles_dir() -> Result<PathBuf> {
     config_home().map(|c| c.join("archdots").join("profiles"))
 }
+
+/// Returns the XDG data base directory.
+///
+/// Uses `$XDG_DATA_HOME` when set and absolute; falls back to
+/// `$HOME/.local/share`.
+pub fn data_home() -> Result<PathBuf> {
+    if let Ok(val) = std::env::var("XDG_DATA_HOME") {
+        let p = PathBuf::from(&val);
+        if p.is_absolute() {
+            return Ok(p);
+        }
+    }
+    home_dir().map(|h| h.join(".local").join("share"))
+}
+
+/// Returns the XDG state base directory.
+///
+/// Uses `$XDG_STATE_HOME` when set and absolute; falls back to
+/// `$HOME/.local/state`.
+pub fn state_home() -> Result<PathBuf> {
+    if let Ok(val) = std::env::var("XDG_STATE_HOME") {
+        let p = PathBuf::from(&val);
+        if p.is_absolute() {
+            return Ok(p);
+        }
+    }
+    home_dir().map(|h| h.join(".local").join("state"))
+}
