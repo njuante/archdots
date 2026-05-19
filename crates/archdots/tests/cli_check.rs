@@ -91,7 +91,42 @@ fn check_help_mentions_all_flags() {
         .stdout(predicate::str::contains("--verbose"));
 }
 
-// ── Test 4: valid profile, --json output shape ────────────────────────────────
+// ── Test 4: pacman missing → exit 3 with clear message ───────────────────────
+//
+// Guards against the regression where PackageDB::new() was lazy and the error
+// only surfaced inside validator.validate(), which was previously not caught.
+
+#[test]
+fn check_exits_3_when_pacman_missing() {
+    let env = TestEnv::new();
+    env.write_minimal_profile("check-test");
+
+    // Force PATH that does not contain pacman.
+    let output = env
+        .cmd()
+        .env("PATH", "/nonexistent")
+        .args(["check", "--json", "check-test"])
+        .output()
+        .unwrap();
+
+    let exit_code = output.status.code().unwrap_or(-1);
+
+    assert_eq!(
+        exit_code, 3,
+        "expected exit 3 when pacman is missing; got {exit_code}.\n\
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pacman") || stderr.contains("Arch"),
+        "stderr must mention pacman or Arch; got: {stderr}"
+    );
+}
+
+// ── Test 5: valid profile, --json output shape ───────────────────────────────
 //
 // On non-Arch hosts (no pacman): exit 3 with a clear "pacman not found" message.
 // On Arch hosts: exit code in [0,1,2,3] and JSON is valid.

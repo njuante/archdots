@@ -8,7 +8,7 @@ use archdots_core::{
     profile::Profile,
     validator::{
         DepKind, DepSource, DepStatus, ValidationReport, ValidationWarning, Validator,
-        ValidatorOptions,
+        ValidatorError, ValidatorOptions,
     },
 };
 use owo_colors::OwoColorize;
@@ -64,7 +64,16 @@ pub fn run(args: CheckArgs) -> Result<i32> {
         strict: args.strict,
         deep: args.deep,
     };
-    let report = validator.validate(&profile, &profile_dir, opts)?;
+    let report = match validator.validate(&profile, &profile_dir, opts) {
+        Ok(r) => r,
+        Err(ValidatorError::Package(PackageError::PacmanMissing)) => {
+            eprintln!(
+                "error: archdots check requires an Arch-based system (pacman not found on PATH)"
+            );
+            return Ok(3);
+        }
+        Err(e) => bail!(e),
+    };
 
     // 4. Render.
     if args.json {
