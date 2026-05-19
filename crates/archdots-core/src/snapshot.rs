@@ -69,6 +69,7 @@ impl std::str::FromStr for SnapshotId {
 /// Kind of filesystem entry recorded in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TargetKind {
     /// A regular file.
     File,
@@ -115,6 +116,7 @@ pub struct HostInfo {
 /// What caused this snapshot to be created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SnapshotTrigger {
     /// Created immediately before an `apply` operation.
     PreApply,
@@ -207,6 +209,7 @@ pub struct SnapshotSummary {
 
 /// Policy for pruning snapshots.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum PrunePolicy {
     /// Keep only the `n` most recent snapshots (across all profiles).
     KeepLast(usize),

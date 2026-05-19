@@ -62,6 +62,7 @@ pub struct PlannedLink {
 
 /// What `apply` will do with a planned target.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LinkDisposition {
     /// Target does not exist; a new symlink will be created.
     Create,
@@ -82,6 +83,7 @@ pub enum LinkDisposition {
 
 /// Reasons a [`PlannedLink`] is in conflict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConflictReason {
     /// The parent directory of `target` does not exist.
     ParentMissing,

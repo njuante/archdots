@@ -72,6 +72,7 @@ pub fn run(profile_filter: Option<&str>, limit: usize, all: bool) -> Result<()> 
         let action_str = match entry.action {
             JournalAction::Apply => "apply",
             JournalAction::Rollback => "rollback",
+            _ => "unknown",
         };
 
         let snap_str = entry.snapshot_id.as_ref().map_or_else(
@@ -87,6 +88,7 @@ pub fn run(profile_filter: Option<&str>, limit: usize, all: bool) -> Result<()> 
             JournalStatus::Success => "success",
             JournalStatus::Partial => "partial",
             JournalStatus::Failed => "failed",
+            _ => "unknown",
         };
 
         let status_colored: String = if use_color {
@@ -95,6 +97,7 @@ pub fn run(profile_filter: Option<&str>, limit: usize, all: bool) -> Result<()> 
                 JournalStatus::Partial => status_str.yellow().to_string(),
                 JournalStatus::Failed => status_str.red().to_string(),
                 JournalStatus::InProgress => status_str.cyan().to_string(),
+                _ => status_str.to_string(),
             }
         } else {
             status_str.to_string()

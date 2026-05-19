@@ -87,6 +87,7 @@ impl FromStr for JournalId {
 /// Whether the journal entry describes an apply or a rollback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum JournalAction {
     /// Forward apply: create/replace symlinks.
     Apply,
@@ -97,6 +98,7 @@ pub enum JournalAction {
 /// Lifecycle status of a journal entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum JournalStatus {
     /// Operation started but not yet concluded (crash-safe sentinel).
     InProgress,
@@ -111,6 +113,7 @@ pub enum JournalStatus {
 /// State of the target path before the operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PriorState {
     /// The path did not exist.
     Absent,
@@ -129,6 +132,7 @@ pub enum PriorState {
 /// Outcome of a single link operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum LinkOutcome {
     /// Symlink was created or replaced.
     Linked,

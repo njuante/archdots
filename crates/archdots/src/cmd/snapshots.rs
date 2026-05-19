@@ -62,6 +62,7 @@ pub fn run_list(profile_filter: Option<&str>) -> Result<()> {
             SnapshotTrigger::PreApply => "pre_apply",
             SnapshotTrigger::Manual => "manual",
             SnapshotTrigger::PreRollback => "pre_rollback",
+            _ => "unknown",
         };
 
         let archive_path = snaps_dir.join(format!("{}.tar.gz", s.id));
@@ -243,6 +244,7 @@ fn summaries_to_remove<'a>(
                 .flat_map(|group| group.into_iter().skip(*n))
                 .collect()
         }
+        _ => Vec::new(),
     }
 }
 

@@ -158,6 +158,7 @@ fn disposition_label(d: &archdots_core::linker::LinkDisposition) -> &'static str
         archdots_core::linker::LinkDisposition::AlreadyOwned => "already-owned",
         archdots_core::linker::LinkDisposition::Conflict(r) => conflict_label(*r),
         archdots_core::linker::LinkDisposition::SkipDir => "skip-dir",
+        _ => "unknown",
     }
 }
 
@@ -168,6 +169,7 @@ fn conflict_label(r: archdots_core::linker::ConflictReason) -> &'static str {
         archdots_core::linker::ConflictReason::OutsideHome => "conflict:outside-home",
         archdots_core::linker::ConflictReason::SourceMissing => "conflict:source-missing",
         archdots_core::linker::ConflictReason::TargetIsDirectory => "conflict:target-is-dir",
+        _ => "conflict:unknown",
     }
 }
 
@@ -177,5 +179,6 @@ fn prior_label(p: &archdots_core::journal::PriorState) -> &'static str {
         archdots_core::journal::PriorState::File => "file",
         archdots_core::journal::PriorState::Dir => "dir",
         archdots_core::journal::PriorState::Symlink { .. } => "symlink",
+        _ => "unknown",
     }
 }
