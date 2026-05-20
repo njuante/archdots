@@ -24,6 +24,11 @@ humantime.workspace = true
 byte-unit.workspace = true
 time.workspace = true
 serde_json.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+fuzzy-matcher.workspace = true
+arboard.workspace = true
+tracing-appender.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
