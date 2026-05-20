@@ -165,3 +165,81 @@ greppable from `ARCHITECTURE.md` without opening the full design doc.
 - Granularity of `ParserKind` and `MentionSource` variants is part of
   the stable public API from v0.3.0. Downstream consumers may match on
   these values; adding variants is a breaking change from that point.
+
+## ADR-004 — TUI architecture (Fase 4)
+
+**Context:** Phase 4 introduces the interactive TUI (`archdots tui`). The
+full design lives in [`PHASE_4_DESIGN.md`](./PHASE_4_DESIGN.md). This ADR
+records the five load-bearing decisions so the rationale is greppable from
+`ARCHITECTURE.md` without opening the full design doc.
+
+1. **Threads + `mpsc`, no tokio in the binary.** ADR-002 stands: `core`
+   stays sync. The TUI spawns a fresh `std::thread` per background
+   operation (apply, rollback, check, prune) and routes completions through
+   a single `mpsc::Sender<TaskMessage>` owned by `App`. We expect at most
+   one concurrent task; thread cost is trivially affordable. Tokio's value
+   (cheap async tasks, I/O composition) is irrelevant for an interactive
+   single-user FS-bound transactional workflow. Workers receive
+   everything by value (`PathBuf`, `String`, options) — no references into
+   `App` — so user navigation during a task is invisible to the worker.
+
+2. **Per-view structs + `Action` enum.** Each tab (`ProfilesView`,
+   `SnapshotsView`, `DepsView`, `DiffView`) owns its state. `handle_event`
+   returns an `Action` consumed by `App::dispatch`. No global reducer, no
+   whole-state clones. Cross-view coordination (e.g. "Profiles → Deps with
+   this name") is an explicit `Action` variant, which keeps per-view tests
+   independent of `App` internals.
+
+3. **`ConfirmKind` enum, not `FnOnce` closures, inside `Modal::Confirm`.**
+   `Modal::Confirm { prompt, kind: ConfirmKind }` carries one of
+   `ApplyProfile(String)` / `RollbackProfile(String)` /
+   `RollbackToSnapshot(SnapshotId)` / `DeleteProfile(String)` /
+   `PruneSnapshot(SnapshotId)` / `QuitWithRunningTask`. `App::execute_confirm`
+   is a single `match` returning the appropriate `Action`. Trade-off
+   accepted: ~25 LOC of boilerplate buys `Modal: Clone`, lets tests assert
+   `matches!(modal, Modal::Confirm { kind: ConfirmKind::ApplyProfile(_) })`
+   without invoking anything, and keeps the dispatch table greppable.
+
+4. **`archdots tui` is an explicit subcommand.** `archdots` with no args
+   keeps `arg_required_else_help = true` and prints the help. No clap
+   default-subcommand magic — that would make `archdots` enter raw mode on
+   piped/CI invocations. Discoverable via `archdots --help`; future
+   completion (clap_complete) gets it for free. `tracing-subscriber` is
+   reconfigured to write `$XDG_STATE_HOME/archdots/tui.log` (truncated per
+   launch, `INFO` default, override via `ARCHDOTS_LOG`) — never stderr,
+   which is owned by ratatui.
+
+5. **Two new public APIs in `archdots-core`, both additive.**
+   - `Linker::rollback_to_snapshot(&SnapshotId, ApplyOptions) -> Result<ApplyReport, CoreError>`
+     restores an arbitrary snapshot (not just the latest success per
+     profile). The profile is read from `manifest.profile`. The journal
+     chain is `InProgress(snapshot_id=None) → InProgress(snapshot_id=Some) → Success|Partial|Failed`
+     with `action = Rollback`, so orphan recovery works identically to
+     `apply`.
+   - `Profile::list_names(&Path) -> Result<Vec<String>, ProfileError>`
+     enumerates profile names in a directory (sorted, `.toml` stripped,
+     non-TOML and invalid names silently skipped). Replaces the open-coded
+     loop in `cmd::profile::run_list`; the TUI uses the same source.
+
+**Consequences:**
+
+- New dependencies in `archdots`: `fuzzy-matcher = "0.3"` (search ranking
+  in Profiles/Snapshots), `arboard = "3"` (clipboard for errors and
+  install commands; falls back to a hint message on init failure).
+- No new dependencies in `archdots-core`.
+- The TUI process **does not** acquire `ApplyLock`. Only per-task workers
+  do, when performing apply / rollback / `rollback_to_snapshot` / prune.
+  Two `archdots tui` processes can browse the same state concurrently;
+  the second mutating worker receives `LockError::Busy` and a modal.
+- Cancellation is out of scope for v0.4. Force-quitting during a running
+  task (Ctrl+C twice within 3 s) leaves a journal orphan that
+  `archdots recover` reconciles on next launch — same flow as a crashed
+  CLI invocation.
+- New module tree under `crates/archdots/src/tui/` (`app`, `action`,
+  `events`, `tasks`, `theme`, `ui/`, `views/`). The TUI never reaches into
+  `cmd/*::run` (those write to stdout); both presenters call the same
+  core functions.
+- Tick rate is **20 Hz hardcoded** (50 ms poll). Redraw only on dirty
+  state or while a task is animating — battery-friendly idle.
+- `ApplyReport` and `ValidationReport` are unchanged; `rollback_to_snapshot`
+  reuses `ApplyReport`.
