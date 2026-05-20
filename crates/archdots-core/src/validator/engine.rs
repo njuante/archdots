@@ -5,6 +5,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::error::ProfileError;
 use crate::packages::{PackageDB, PackageError, ProviderHit};
 use crate::parsers::{self, ParserKind};
 use crate::profile::{LinkMode, Profile, ResolveCtx};
@@ -121,10 +122,13 @@ impl<'a> Validator<'a> {
             let source_path = Profile::resolve_source(file_entry, profile_dir)?;
 
             // Infer parser kind: prefer the expanded target path, fall back to source.
+            // UnknownEnvVar is not swallowed — it surfaces as ValidatorError::Profile.
             let kind: Option<ParserKind> = {
-                let from_target = Profile::resolve_target(file_entry, &ctx)
-                    .ok()
-                    .and_then(|p| parsers::infer_kind(&p));
+                let from_target = match Profile::resolve_target(file_entry, &ctx) {
+                    Ok(p) => parsers::infer_kind(&p),
+                    Err(e @ ProfileError::UnknownEnvVar { .. }) => return Err(e.into()),
+                    Err(_) => None,
+                };
                 if from_target.is_some() {
                     from_target
                 } else {

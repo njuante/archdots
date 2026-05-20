@@ -7,10 +7,11 @@ mod common;
 
 use std::path::PathBuf;
 
+use archdots_core::error::ProfileError;
 use archdots_core::packages::PackageDB;
 use archdots_core::profile::{Dependencies, FileEntry, Hooks, LinkMode, Profile, ProfileMeta};
 use archdots_core::validator::{
-    DepKind, DepSource, DepStatus, ValidationWarning, Validator, ValidatorOptions,
+    DepKind, DepSource, DepStatus, ValidationWarning, Validator, ValidatorError, ValidatorOptions,
 };
 use common::MockRunner;
 use tempfile::TempDir;
@@ -520,4 +521,35 @@ fn fifty_mentions_one_entry_with_all_mentions() {
     } else {
         panic!("expected InferredFromConfig source for picom");
     }
+}
+
+// ── Test 17: $VAR in profile target propagates as ValidatorError::Profile ──────
+
+#[test]
+fn validate_propagates_unknown_env_var_from_target() {
+    // ARCHDOTS_NONEXISTENT_VAR_FOR_TEST_UNIQUE is virtually guaranteed to be
+    // absent from any real environment; we use it to trigger UnknownEnvVar.
+    let d = db(MockRunner::new().expect_pacman_q("").expect_pacman_qm(""));
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+
+    let mut profile = empty_profile("env-var-test");
+    profile.files = vec![symlink_entry(
+        "f1",
+        "dummy.conf",
+        "$ARCHDOTS_NONEXISTENT_VAR_FOR_TEST_UNIQUE/foo.conf",
+    )];
+
+    let v = Validator::new(&d, &home);
+    let err = v
+        .validate(&profile, tmp.path(), ValidatorOptions::default())
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            ValidatorError::Profile(ProfileError::UnknownEnvVar { .. })
+        ),
+        "expected ValidatorError::Profile(UnknownEnvVar), got {err:?}"
+    );
 }
