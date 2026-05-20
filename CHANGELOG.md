@@ -5,6 +5,27 @@ All notable changes to archdots will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-20
+
+### Added
+
+- `archdots check <profile>` subcommand for dependency validation against `pacman -Q` / `pacman -Qm`.
+- Config parsers for bspwm, sxhkd, hyprland, i3, sway, zsh, bash, and shell dotfiles.
+- `PackageDB` wrapping `pacman -Q` / `pacman -Qm` / `pacman -F` with a curated binary→package table.
+- `ValidationReport` with stable JSON schema (`schema_version: 1`).
+- `--strict`, `--deep`, `--verbose`, `--json` flags for `archdots check`.
+- Exit codes documented: 0 = all required installed, 1 = required missing, 2 = optional/implicit missing, 3 = indeterminate.
+
+### Fixed
+
+- Profile errors (broken TOML, unresolvable `$VAR` in target paths) now exit 3 instead of 1.
+- `$VAR` resolution failures in profile file targets surface as `ValidatorError::Profile` instead of being silently swallowed.
+- AUR dependencies are deduplicated in the validator (same package listed twice → one entry, one warning).
+
+### Changed
+
+- Public API: `MentionSource::HyprlandBind` distinguishes `bind* = MOD, KEY, exec, X` from `exec = X`.
+
 ## [0.2.0] - 2026-05-19
 
 ### Added

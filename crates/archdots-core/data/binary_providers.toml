@@ -1,0 +1,179 @@
+# Curated binary → Arch package mapping for archdots Phase 3.
+#
+# BEST EFFORT, not exhaustive. ~40 most common binaries in tiling-WM ricing.
+# For anything not listed, use `archdots check --deep` to fall back to `pacman -F`.
+#
+# Schema:
+#   name    — binary (executable filename, exactly as it appears in $PATH)
+#   package — canonical Arch package providing it
+#   source  — "repo" (default) | "aur"
+
+[[binary]]
+name = "rofi"
+package = "rofi"
+
+[[binary]]
+name = "dmenu"
+package = "dmenu"
+
+[[binary]]
+name = "wofi"
+package = "wofi"
+
+[[binary]]
+name = "fuzzel"
+package = "fuzzel"
+
+[[binary]]
+name = "polybar"
+package = "polybar"
+
+[[binary]]
+name = "waybar"
+package = "waybar"
+
+[[binary]]
+name = "eww"
+package = "eww"
+source = "aur"
+
+[[binary]]
+name = "picom"
+package = "picom"
+
+[[binary]]
+name = "dunst"
+package = "dunst"
+
+[[binary]]
+name = "mako"
+package = "mako"
+
+[[binary]]
+name = "swaync"
+package = "swaync"
+source = "aur"
+
+[[binary]]
+name = "kitty"
+package = "kitty"
+
+[[binary]]
+name = "alacritty"
+package = "alacritty"
+
+[[binary]]
+name = "foot"
+package = "foot"
+
+[[binary]]
+name = "wezterm"
+package = "wezterm"
+
+[[binary]]
+name = "st"
+package = "st"
+source = "aur"
+
+[[binary]]
+name = "nvim"
+package = "neovim"
+
+[[binary]]
+name = "helix"
+package = "helix"
+
+[[binary]]
+name = "Hyprland"
+package = "hyprland"
+
+[[binary]]
+name = "hyprpaper"
+package = "hyprpaper"
+
+[[binary]]
+name = "hypridle"
+package = "hypridle"
+
+[[binary]]
+name = "hyprlock"
+package = "hyprlock"
+
+[[binary]]
+name = "swww"
+package = "swww"
+source = "aur"
+
+[[binary]]
+name = "swaybg"
+package = "swaybg"
+
+[[binary]]
+name = "swayidle"
+package = "swayidle"
+
+[[binary]]
+name = "swaylock"
+package = "swaylock"
+
+[[binary]]
+name = "i3lock"
+package = "i3lock"
+
+[[binary]]
+name = "feh"
+package = "feh"
+
+[[binary]]
+name = "nitrogen"
+package = "nitrogen"
+
+[[binary]]
+name = "redshift"
+package = "redshift"
+
+[[binary]]
+name = "gammastep"
+package = "gammastep"
+
+[[binary]]
+name = "brightnessctl"
+package = "brightnessctl"
+
+# pactl is provided by libpulse on stock pulseaudio installs; pure PipeWire
+# setups get it through pipewire-pulse which declares `provides=libpulse`.
+[[binary]]
+name = "pactl"
+package = "libpulse"
+
+[[binary]]
+name = "pavucontrol"
+package = "pavucontrol"
+
+[[binary]]
+name = "nm-applet"
+package = "network-manager-applet"
+
+[[binary]]
+name = "sxhkd"
+package = "sxhkd"
+
+[[binary]]
+name = "fzf"
+package = "fzf"
+
+[[binary]]
+name = "starship"
+package = "starship"
+
+[[binary]]
+name = "fastfetch"
+package = "fastfetch"
+
+[[binary]]
+name = "bat"
+package = "bat"
+
+[[binary]]
+name = "eza"
+package = "eza"

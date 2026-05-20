@@ -10,6 +10,9 @@ use crate::{journal::JournalId, linker::ConflictReason, snapshot::SnapshotId};
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CoreError {
+    /// Package manager / `pacman` error.
+    #[error(transparent)]
+    Package(#[from] PackageError),
     /// I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -264,6 +267,41 @@ pub enum ProfileError {
         /// The full unexpanded target string for context.
         target: String,
     },
+}
+
+/// Package manager errors for the `archdots check` pipeline.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum PackageError {
+    /// `pacman` not found on `PATH`; the host is not an Arch-based system.
+    #[error("pacman not found on PATH; archdots check requires an Arch-based system")]
+    PacmanMissing,
+
+    /// `pacman` exited with a non-zero status code.
+    #[error("pacman exited with status {code}: {stderr}")]
+    PacmanFailed {
+        /// Exit code returned by `pacman`.
+        code: i32,
+        /// Captured stderr output.
+        stderr: String,
+    },
+
+    /// A line of `pacman` output could not be parsed.
+    #[error("could not parse pacman output: {0}")]
+    UnparseableOutput(String),
+
+    /// `/var/lib/pacman/db.lck` exists; the database is locked.
+    #[error("pacman database is locked (/var/lib/pacman/db.lck exists)")]
+    DatabaseLocked,
+
+    /// Failed to spawn a subprocess.
+    #[error("failed to spawn subprocess: {0}")]
+    Spawn(#[source] std::io::Error),
+
+    /// The embedded `binary_providers.toml` table could not be parsed or
+    /// failed validation (e.g. duplicate binary entries, empty package name).
+    #[error("failed to parse curated binary\u{2192}package table: {0}")]
+    CuratedTableParseError(String),
 }
 
 /// Errors that can occur when acquiring or releasing the apply lock.
