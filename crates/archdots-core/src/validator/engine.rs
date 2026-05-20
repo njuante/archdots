@@ -66,10 +66,10 @@ impl<'a> Validator<'a> {
         // PASO 1: Detect AUR helper.
         let aur_helper = self.db.detect_aur_helper()?;
 
-        let aur_dep_names: Vec<String> = profile.dependencies.aur.clone();
-        if aur_helper.is_none() && !aur_dep_names.is_empty() {
+        let aur_deps_dedup = dedup(&profile.dependencies.aur);
+        if aur_helper.is_none() && !aur_deps_dedup.is_empty() {
             warnings.push(ValidationWarning::AurDepsButNoHelper {
-                aur_deps: aur_dep_names.clone(),
+                aur_deps: aur_deps_dedup.clone(),
             });
         }
 
@@ -88,7 +88,7 @@ impl<'a> Validator<'a> {
         }
 
         // PASO 3: AUR deps.
-        for name in &aur_dep_names {
+        for name in &aur_deps_dedup {
             let status = self.resolve_status(name, &mut db_locked_warned, &mut warnings);
             entries.push(DepEntry {
                 name: name.clone(),
