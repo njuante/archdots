@@ -539,7 +539,11 @@ fn validate_dedupes_aur_deps() {
         .validate(&profile, tmp.path(), ValidatorOptions::default())
         .unwrap();
 
-    let aur_entries: Vec<_> = report.entries.iter().filter(|e| e.kind == DepKind::Aur).collect();
+    let aur_entries: Vec<_> = report
+        .entries
+        .iter()
+        .filter(|e| e.kind == DepKind::Aur)
+        .collect();
     assert_eq!(
         aur_entries.len(),
         1,
@@ -550,9 +554,9 @@ fn validate_dedupes_aur_deps() {
     let swww_unused: Vec<_> = report
         .warnings
         .iter()
-        .filter(|w| {
-            matches!(w, ValidationWarning::DeclaredButUnused { name, .. } if name == "swww")
-        })
+        .filter(
+            |w| matches!(w, ValidationWarning::DeclaredButUnused { name, .. } if name == "swww"),
+        )
         .collect();
     assert_eq!(
         swww_unused.len(),

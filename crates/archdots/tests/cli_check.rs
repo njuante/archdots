@@ -209,11 +209,7 @@ target = "$ARCHDOTS_NONEXISTENT_VAR_CLI_TEST_UNIQUE_99/foo.conf"
 "#;
     std::fs::write(dir.join("env-var-test.toml"), content).unwrap();
 
-    let output = env
-        .cmd()
-        .args(["check", "env-var-test"])
-        .output()
-        .unwrap();
+    let output = env.cmd().args(["check", "env-var-test"]).output().unwrap();
 
     let exit_code = output.status.code().unwrap_or(-1);
     assert_eq!(
@@ -239,11 +235,7 @@ fn cli_check_exits_3_when_profile_file_is_malformed() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("broken.toml"), "[[[not valid toml").unwrap();
 
-    let output = env
-        .cmd()
-        .args(["check", "broken"])
-        .output()
-        .unwrap();
+    let output = env.cmd().args(["check", "broken"]).output().unwrap();
 
     let exit_code = output.status.code().unwrap_or(-1);
     assert_eq!(
