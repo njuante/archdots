@@ -155,12 +155,6 @@ greppable from `ARCHITECTURE.md` without opening the full design doc.
 
 - New data files in `archdots-core`:
   `data/binary_providers.toml`, `data/builtin_filter.toml`.
-- `data/known_dotfiles.toml` gains an optional `parser` field
-  (`Option<ParserKind>`). Existing entries without it stay valid —
-  `infer_kind` simply returns `None` for paths under those entries.
-- A new public method `Detector::parser_for(&Path) -> Option<ParserKind>`
-  exposes catalog-driven parser inference to the validator without
-  making `KnownEntry` public.
 - A new `archdots check` subcommand with flags `--json`, `--strict`,
   `--deep`, `--verbose`.
 - No new heavyweight dependencies — `PackageDB` uses
@@ -168,3 +162,6 @@ greppable from `ARCHITECTURE.md` without opening the full design doc.
 - CI continues to run on Ubuntu and never invokes `pacman`. One
   `#[ignore]`d integration test exercises real `pacman` on Arch hosts,
   same pattern as Phase 2's cross-process lock test.
+- Granularity of `ParserKind` and `MentionSource` variants is part of
+  the stable public API from v0.3.0. Downstream consumers may match on
+  these values; adding variants is a breaking change from that point.

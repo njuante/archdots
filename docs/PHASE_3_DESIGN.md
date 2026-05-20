@@ -226,11 +226,13 @@ small and validators run interactively.
 | `I3Sway` | `exec X`, `exec_always X`, `bindsym KEY exec [--flags] X` | other directives (`set`, `font`, `bar`, `output`, `input`) |
 | `Shell` | `alias name=X` (first token of X), `command -v X`, top-level `X arg…` invocations | shell builtins (filtered by validator); heredoc bodies (best effort) |
 
-The i3/sway split is one `ParserKind::I3Sway` because the relevant
-syntax (`exec`, `exec_always`, `bindsym ... exec`) is identical across
-the two. Likewise, `.zshrc`, `.bashrc`, `.profile`, `.xprofile`, and
-`.xinitrc` share `ParserKind::Shell`: the differences between zsh and
-bash are irrelevant for dep detection.
+I3 and Sway use separate `ParserKind` variants (`I3` and `Sway`) but
+share the same parser implementation — the syntax (`exec`,
+`exec_always`, `bindsym ... exec`) is identical across the two.
+Likewise, `Zsh`, `Bash`, and `Shell` each have their own `ParserKind`
+variant but share implementation. The granularity is deliberate: it
+allows the validator report to distinguish the source WM or shell even
+when the extraction logic is identical.
 
 ### 4.6 Noise filter
 
@@ -291,10 +293,10 @@ Mentions arrive raw and duplicated. The validator constructs one
 - Resolve each group's binary via `PackageDB::provider_of`.
 - Attach the full mention list to `DepSource::InferredFromConfig.mentions`.
 
-If a declared dep's name matches the resolved package of a group, the
-group's mentions are attached to that `DepEntry` (now
-`DepSource::DeclaredInProfile` with provenance). The implicit entry
-is not emitted in that case.
+If a binary from the mention map resolves (via `provider_of`) to a
+package whose name matches a declared dep, the implicit entry is not
+emitted — the declared entry already covers it. Mentions are only
+attached to `DepSource::InferredFromConfig` entries (see §10.1).
 
 ### 5.3 `--strict` mode
 
@@ -304,43 +306,6 @@ exit code is computed (§11). It does *not* change the entry's `kind`;
 the JSON output stays parseable. Strict mode is opt-in because most
 ricing setups have a long tail of implicit binaries the user doesn't
 care about.
-
-### 5.4 `known_dotfiles.toml` — new optional `parser` field
-
-The catalog at `crates/archdots-core/data/known_dotfiles.toml` gains an
-optional field:
-
-```toml
-[[entry]]
-name = "hyprland"
-paths = [".config/hypr/hyprland.conf"]
-category = "wm"
-optional_deps = ["xdg-desktop-portal-hyprland"]
-parser = "hyprland"            # NEW — optional
-```
-
-`parser` is one of `"bspwm" | "sxhkd" | "hyprland" | "i3_sway" |
-"shell"`. Entries without the field deserialize to `None` and produce
-no parser inference (`infer_kind` returns `None` for paths under that
-entry). All existing entries remain valid without changes — strict
-forward-compatibility.
-
-`infer_kind(path)` matches the input path against the catalog by
-**suffix on the last two components** (e.g., `hypr/hyprland.conf`).
-This works equally well on source paths (`<profile_dir>/hypr/hyprland.conf`)
-and target paths (`~/.config/hypr/hyprland.conf`). Ambiguous matches
-(rare) return the first match in catalog order.
-
-The lookup is exposed by `Detector` as:
-
-```rust
-impl Detector {
-    pub fn parser_for(&self, path: &Path) -> Option<ParserKind>;
-}
-```
-
-so the catalog parsing stays internal to `detector` and the validator
-calls `Detector::parser_for`.
 
 ---
 
@@ -693,16 +658,20 @@ pub struct Mention {
 #[non_exhaustive]
 pub enum MentionSource {
     BspwmExec,
-    SxhkdCommand,
     HyprlandExec,        // `exec = X`
     HyprlandExecOnce,    // `exec-once = X`
     HyprlandBind,        // `bind* = MOD, KEY, exec, X`
     I3SwayExec,          // `exec` / `exec_always`
     I3SwayBindsym,
+    SxhkdCommand,
     ShellAlias,
     ShellProbe,          // `command -v X`
     ShellInvoke,         // top-level `X arg…`
 }
+
+// Note: `MentionSource` and `ParserKind` variants are stable public API
+// from v0.3.0. Downstream consumers may match on them; adding variants
+// is a breaking change.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -710,9 +679,15 @@ pub enum ParserKind {
     Bspwm,
     Sxhkd,
     Hyprland,
-    I3Sway,
+    I3,
+    Sway,
+    Zsh,
+    Bash,
     Shell,
 }
+// Note: I3 and Sway share the parser implementation internally but are
+// distinguished for report granularity. Zsh, Bash, and Shell similarly
+// share implementation but have separate variants.
 
 /// Best-effort parser. Never errors; malformed input degrades to a
 /// partial (or empty) result.
@@ -799,11 +774,12 @@ pub enum ValidatorError {
 pub struct Validator<'a> {
     db: &'a PackageDB,
     home: &'a Path,
-    detector: &'a Detector,
 }
 
 impl<'a> Validator<'a> {
-    pub fn new(db: &'a PackageDB, detector: &'a Detector, home: &'a Path) -> Self;
+    pub fn new(db: &'a PackageDB, home: &'a Path) -> Self;
+    // Note: `infer_kind` is a pure function of the `parsers` module —
+    // it does not require an injected `Detector`.
 
     pub fn validate(
         &self,
