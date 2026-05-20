@@ -4,15 +4,15 @@ Dotfile manager for Arch Linux ricers.
 
 ![CI](https://github.com/njuante/archdots/actions/workflows/ci.yml/badge.svg)
 
-> archdots is in early development (v0.2.x). Core apply/rollback pipeline is functional. CLI offers init, profile, apply, diff, rollback, history, snapshots, and recover. TUI and dependency validation are upcoming phases.
+> archdots is at v0.3.0. Core apply/rollback pipeline and dependency validation are functional. CLI offers init, profile, apply, diff, rollback, history, snapshots, recover, and check.
 
 ## Roadmap
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | Detection, profiles, CLI scaffolding | done |
-| 2 | Atomic apply with rollback, snapshots, journal, recovery | done |
-| 3 | Dependency validation | in progress / planned |
+| 1 | Detection, profiles, CLI scaffolding | ✅ done |
+| 2 | Atomic apply with rollback, snapshots, journal, recovery | ✅ done |
+| 3 | Dependency validation (`archdots check`) | ✅ done |
 | 4 | TUI | planned |
 | 5 | README export | planned |
 
@@ -98,6 +98,31 @@ archdots snapshots prune --keep 5
 ```sh
 archdots recover
 ```
+
+**`archdots check <profile>`** — validate a profile's dependency declarations against the installed package database:
+
+```sh
+archdots check my-rice               # text report
+archdots check my-rice --json        # machine-readable JSON
+archdots check my-rice --strict      # promote implicit-missing to required
+archdots check my-rice --deep        # use pacman -F for unknown binaries
+archdots check my-rice --verbose     # show all mentions
+```
+
+## Dependency validation
+
+`archdots check` cross-references the packages declared in a profile with
+`pacman -Q` output and infers additional dependencies by parsing config files
+(bspwmrc, hyprland.conf, i3/sway config, .zshrc, .bashrc, and others).
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | No missing required deps |
+| 1 | One or more required deps missing |
+| 2 | Only optional or implicit deps missing (or implicit missing under `--strict` → 1) |
+| 3 | Indeterminate: pacman not found, database locked, or profile broken |
 
 ## Safety guarantees
 
