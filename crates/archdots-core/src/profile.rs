@@ -339,6 +339,49 @@ impl Profile {
         Ok(path)
     }
 
+    /// List the names of all profiles in `profiles_dir`.
+    ///
+    /// Returns an empty `Vec` (not an error) if `profiles_dir` does not exist —
+    /// the typical first-run case. Files that don't end in `.toml` are silently
+    /// ignored. Files whose stem is not a valid profile name (per `[a-z0-9_-]+`)
+    /// are also ignored. Results are sorted alphabetically and deduplicated.
+    ///
+    /// # Errors
+    ///
+    /// - [`ProfileError::Io`] if `profiles_dir` exists but cannot be read.
+    pub fn list_names(profiles_dir: &Path) -> Result<Vec<String>, ProfileError> {
+        if !profiles_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut names: Vec<String> = std::fs::read_dir(profiles_dir)
+            .map_err(|e| ProfileError::Io {
+                path: profiles_dir.to_path_buf(),
+                source: e,
+            })?
+            .filter_map(|res| {
+                let entry = res.ok()?;
+                let path = entry.path();
+                if path.extension()?.to_str()? != "toml" {
+                    return None;
+                }
+                let stem = path.file_stem()?.to_str()?.to_owned();
+                if stem.is_empty()
+                    || !stem
+                        .chars()
+                        .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-'))
+                {
+                    return None;
+                }
+                Some(stem)
+            })
+            .collect();
+
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
     /// Iterate over all file entries with their resolved `(source, target)` paths.
     ///
     /// Yields `(entry, absolute_source, absolute_target)` for each entry.
@@ -611,5 +654,59 @@ mod tests {
             Profile::resolve_target(&entry, &ctx).unwrap(),
             std::path::PathBuf::from("/home/alice")
         );
+    }
+
+    // list_names
+
+    #[test]
+    fn list_names_nonexistent_dir_returns_empty() {
+        let dir = std::path::PathBuf::from("/tmp/__archdots_nonexistent_dir_12345");
+        let names = Profile::list_names(&dir).unwrap();
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn list_names_filters_and_sorts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        // 3 valid profiles
+        std::fs::write(dir.join("beta.toml"), "x").unwrap();
+        std::fs::write(dir.join("alpha.toml"), "x").unwrap();
+        std::fs::write(dir.join("gamma-1.toml"), "x").unwrap();
+        // 1 non-toml file
+        std::fs::write(dir.join("readme.txt"), "x").unwrap();
+        // 1 invalid name (uppercase)
+        std::fs::write(dir.join("Invalid.toml"), "x").unwrap();
+
+        let names = Profile::list_names(dir).unwrap();
+        assert_eq!(names, vec!["alpha", "beta", "gamma-1"]);
+    }
+
+    #[test]
+    fn list_names_dedup_defensive() {
+        // In a normal filesystem, duplicate stems can't appear.
+        // We test dedup by verifying the function doesn't crash on an
+        // already-sorted list with potential duplicates from our collector.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("my-profile.toml"), "x").unwrap();
+        let names = Profile::list_names(dir).unwrap();
+        assert_eq!(names, vec!["my-profile"]);
+    }
+
+    #[test]
+    fn list_names_permission_denied_returns_io_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("restricted");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("test.toml"), "x").unwrap();
+        // Make directory unreadable
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = Profile::list_names(&dir);
+        // Restore permissions so TempDir can clean up
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(result, Err(crate::error::ProfileError::Io { .. })));
     }
 }
