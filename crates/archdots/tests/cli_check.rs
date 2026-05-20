@@ -180,3 +180,82 @@ fn check_json_output_valid_or_pacman_missing_exit3() {
         _ => panic!("unexpected exit code {exit_code}"),
     }
 }
+
+// ── Test 6: profile with $NONEXISTENT target → exit 3 ────────────────────────
+//
+// On non-Arch (CI): exits 3 due to pacman missing before reaching the validator.
+// On Arch: exits 3 because ValidatorError::Profile(UnknownEnvVar) propagates.
+// Either way, exit 3 and a non-empty stderr are the contract.
+
+#[test]
+fn cli_check_exits_3_when_profile_has_unresolved_var() {
+    let env = TestEnv::new();
+    let dir = env.profiles_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let content = r#"schema_version = 1
+
+[profile]
+name = "env-var-test"
+
+[dependencies]
+
+[hooks]
+
+[[files]]
+id = "f1"
+source = "foo.conf"
+target = "$ARCHDOTS_NONEXISTENT_VAR_CLI_TEST_UNIQUE_99/foo.conf"
+"#;
+    std::fs::write(dir.join("env-var-test.toml"), content).unwrap();
+
+    let output = env
+        .cmd()
+        .args(["check", "env-var-test"])
+        .output()
+        .unwrap();
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        exit_code,
+        3,
+        "expected exit 3 for unresolved env var; got {exit_code}.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.is_empty(),
+        "stderr must contain an error message; got empty"
+    );
+}
+
+// ── Test 7: malformed profile TOML → exit 3 ──────────────────────────────────
+
+#[test]
+fn cli_check_exits_3_when_profile_file_is_malformed() {
+    let env = TestEnv::new();
+    let dir = env.profiles_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("broken.toml"), "[[[not valid toml").unwrap();
+
+    let output = env
+        .cmd()
+        .args(["check", "broken"])
+        .output()
+        .unwrap();
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    assert_eq!(
+        exit_code,
+        3,
+        "expected exit 3 for malformed profile; got {exit_code}.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("error"),
+        "stderr must mention 'error'; got: {stderr}"
+    );
+}

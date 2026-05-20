@@ -43,7 +43,13 @@ pub fn run(args: CheckArgs) -> Result<i32> {
             profile_path.display()
         );
     }
-    let profile = Profile::load_from_file(&profile_path)?;
+    let profile = match Profile::load_from_file(&profile_path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error loading profile: {e}");
+            return Ok(3);
+        }
+    };
 
     // 2. Build PackageDB.
     let db = match PackageDB::new() {
@@ -70,6 +76,10 @@ pub fn run(args: CheckArgs) -> Result<i32> {
             eprintln!(
                 "error: archdots check requires an Arch-based system (pacman not found on PATH)"
             );
+            return Ok(3);
+        }
+        Err(ValidatorError::Profile(e)) => {
+            eprintln!("error in profile: {e}");
             return Ok(3);
         }
         Err(e) => bail!(e),
