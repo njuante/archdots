@@ -26,6 +26,8 @@ pub enum MentionSource {
     HyprlandExec,
     /// `exec-once = X` in hyprland.conf.
     HyprlandExecOnce,
+    /// `bind* = MOD, KEY, exec, X` in hyprland.conf.
+    HyprlandBind,
     /// `exec` or `exec_always` directive in an i3/sway config.
     I3SwayExec,
     /// `bindsym KEY exec X` in an i3/sway config.

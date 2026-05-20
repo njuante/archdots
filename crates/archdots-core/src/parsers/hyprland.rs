@@ -45,7 +45,7 @@ pub(super) fn parse(contents: &str) -> Vec<Mention> {
                         mentions.push(Mention {
                             binary: b,
                             line: line_num,
-                            source: MentionSource::HyprlandExec,
+                            source: MentionSource::HyprlandBind,
                         });
                     }
                 }
@@ -93,13 +93,22 @@ mod tests {
     fn bind_exec() {
         let ms = parse("bind = SUPER, Q, exec, kitty");
         assert_eq!(binary_names(&ms), ["kitty"]);
-        assert_eq!(ms[0].source, MentionSource::HyprlandExec);
+        assert_eq!(ms[0].source, MentionSource::HyprlandBind);
+    }
+
+    #[test]
+    fn hyprland_bind_emits_hyprland_bind_source() {
+        let contents = "bind = SUPER, Q, exec, kitty\n";
+        let m = parse(contents);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].source, MentionSource::HyprlandBind);
     }
 
     #[test]
     fn bindl_exec() {
         let ms = parse("bindl = , XF86AudioMute, exec, pamixer --toggle-mute");
         assert_eq!(binary_names(&ms), ["pamixer"]);
+        assert_eq!(ms[0].source, MentionSource::HyprlandBind);
     }
 
     #[test]
