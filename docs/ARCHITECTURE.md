@@ -225,7 +225,8 @@ records the five load-bearing decisions so the rationale is greppable from
 
 - New dependencies in `archdots`: `fuzzy-matcher = "0.3"` (search ranking
   in Profiles/Snapshots), `arboard = "3"` (clipboard for errors and
-  install commands; falls back to a hint message on init failure).
+  install commands; falls back to a hint message on init failure),
+  `tracing-appender = "0.2"` (non-blocking file writer for `tui.log`).
 - No new dependencies in `archdots-core`.
 - The TUI process **does not** acquire `ApplyLock`. Only per-task workers
   do, when performing apply / rollback / `rollback_to_snapshot` / prune.
@@ -243,3 +244,31 @@ records the five load-bearing decisions so the rationale is greppable from
   state or while a task is animating — battery-friendly idle.
 - `ApplyReport` and `ValidationReport` are unchanged; `rollback_to_snapshot`
   reuses `ApplyReport`.
+
+**Design deviations (v0.4.0 implementation vs. PHASE_4_DESIGN.md):**
+
+- **Ctrl+C during `Running` (§3.4):** Implemented as
+  `Modal::Confirm { kind: ConfirmKind::QuitWithRunningTask }` rather than
+  the "double Ctrl+C within 3 s → `exit(130)`" flow described in the
+  design. The UX outcome is equivalent; the modal is more explicit and
+  consistent with the rest of the confirm-flow. Decision: **modal**.
+
+- **`Modal::Confirm` carries `details: Option<String>` (§5.6):** The
+  design's `Modal::Confirm { prompt, kind }` was extended with an
+  optional `details` field for supplementary context (e.g. "this will
+  replace N symlinks"). Accepted — improves UX, no impact on `Modal: Clone`
+  or the `ConfirmKind` match table.
+
+- **`SnapshotsView` search filters by profile name only (§7.3):** The
+  design specifies "search by id-prefix / profile". The implementation
+  filters only by profile name, not by id-prefix. Sufficient for v0.4;
+  id-prefix search is a v0.5 candidate.
+
+- **Stale-completion check (`TaskId`, §3.5):** `BackgroundState::Running`
+  carries an `id` field reserved for comparing against `Completed.id`
+  before transitioning to `Idle`, but the comparison is not yet performed.
+  The receiver does not survive a process restart, so there is no
+  real-world impact. Noted as technical debt for a future cleanup.
+
+- **"Still running…" hints after 10 s / 30 s (§11 case 8):** Not
+  implemented in v0.4. Candidate for v0.4.1.

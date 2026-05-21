@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PrunePolicy::OnlyId`: prune a specific snapshot by id.
 - Single-column layout when terminal width < 60 columns; minimum-size guard at 40×10.
 - File-based TUI logging to `$XDG_STATE_HOME/archdots/tui.log` (degraded gracefully on error).
+- New `archdots` binary dependencies: `fuzzy-matcher = "0.3"` (profile/snapshot fuzzy search),
+  `arboard = "3"` (clipboard; falls back to a hint on init failure),
+  `tracing-appender = "0.2"` (non-blocking file writer for `tui.log`).
 
 ## [0.3.0] - 2026-05-20
 
