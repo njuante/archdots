@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::{fmt, EnvFilter};
 
 mod cmd;
+mod diff_util;
 mod tui;
 mod xdg;
 

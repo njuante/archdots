@@ -5,9 +5,8 @@ use std::{fs, io::IsTerminal};
 use anyhow::{bail, Context, Result};
 use archdots_core::profile::{Profile, ResolveCtx};
 use owo_colors::OwoColorize;
-use similar::{ChangeTag, TextDiff};
 
-use crate::xdg;
+use crate::{diff_util, diff_util::DiffTag, xdg};
 
 pub fn run(profile_name: &str) -> Result<()> {
     let home = xdg::home_dir()?;
@@ -58,21 +57,20 @@ pub fn run(profile_name: &str) -> Result<()> {
         println!("--- source: {}", src.display());
         println!("+++ target: {}", tgt.display());
 
-        let diff = TextDiff::from_lines(&src_content, &tgt_content);
-        for change in diff.iter_all_changes() {
-            let sign = match change.tag() {
-                ChangeTag::Delete => "-",
-                ChangeTag::Insert => "+",
-                ChangeTag::Equal => " ",
+        for (tag, text) in diff_util::compute_diff_lines(&src_content, &tgt_content) {
+            let sign = match tag {
+                DiffTag::Removed => "-",
+                DiffTag::Added => "+",
+                DiffTag::Context => " ",
             };
             if use_color {
-                match change.tag() {
-                    ChangeTag::Delete => print!("{}", format!("{sign}{change}").red()),
-                    ChangeTag::Insert => print!("{}", format!("{sign}{change}").green()),
-                    ChangeTag::Equal => print!("{sign}{change}"),
+                match tag {
+                    DiffTag::Removed => print!("{}", format!("{sign}{text}").red()),
+                    DiffTag::Added => print!("{}", format!("{sign}{text}").green()),
+                    DiffTag::Context => print!("{sign}{text}"),
                 }
             } else {
-                print!("{sign}{change}");
+                print!("{sign}{text}");
             }
         }
     }
