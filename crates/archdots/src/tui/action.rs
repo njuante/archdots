@@ -30,6 +30,8 @@ pub enum Action {
     CloseModal,
     /// Request a clean exit.
     Quit,
+    /// Copy the given text to the system clipboard.
+    CopyToClipboard(String),
 }
 
 /// Discriminant for `Modal::Confirm` — identifies what action to take when the

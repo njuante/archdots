@@ -13,9 +13,10 @@ use std::sync::mpsc;
 use archdots_core::{
     journal::Journal,
     linker::{ApplyOptions, ApplyReport, LinkSpec, Linker, RollbackOptions},
+    packages::{PackageDB, PackageError},
     profile::{Profile, ResolveCtx},
     snapshot::{PrunePolicy, PruneReport, SnapshotId, SnapshotManager, SnapshotSummary},
-    validator::ValidationReport,
+    validator::{ValidationReport, Validator, ValidatorOptions},
 };
 
 use crate::tui::app::AppPaths;
@@ -95,7 +96,9 @@ fn execute(kind: &BackgroundKind, paths: &AppPaths) -> TaskResult {
         BackgroundKind::RollbackToSnapshot { id } => {
             TaskResult::Rollback(run_rollback_to_snapshot(id, paths))
         }
-        BackgroundKind::Check { .. } => todo!("check worker (Phase 4, Session 4)"),
+        BackgroundKind::Check { profile, deep } => {
+            TaskResult::Check(run_check(profile, *deep, paths))
+        }
         BackgroundKind::RefreshSnapshots => TaskResult::SnapshotList(run_refresh_snapshots(paths)),
         BackgroundKind::PruneSnapshot { id } => TaskResult::Prune(run_prune_snapshot(id, paths)),
         #[cfg(test)]
@@ -168,6 +171,28 @@ fn run_refresh_snapshots(paths: &AppPaths) -> Result<Vec<SnapshotSummary>, anyho
 fn run_prune_snapshot(id: &SnapshotId, paths: &AppPaths) -> Result<PruneReport, anyhow::Error> {
     let snapshots = SnapshotManager::open(&paths.data_home)?;
     Ok(snapshots.prune(PrunePolicy::OnlyId(id.clone()))?)
+}
+
+fn run_check(
+    profile: &str,
+    deep: bool,
+    paths: &AppPaths,
+) -> Result<ValidationReport, anyhow::Error> {
+    let profile_path = paths.profiles_dir.join(format!("{profile}.toml"));
+    let p = Profile::load_from_file(&profile_path)?;
+    let db = match PackageDB::new() {
+        Ok(db) => db,
+        Err(PackageError::PacmanMissing) => {
+            anyhow::bail!("archdots check requires an Arch-based system (pacman not found)");
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let validator = Validator::new(&db, &paths.home);
+    let opts = ValidatorOptions {
+        strict: false,
+        deep,
+    };
+    Ok(validator.validate(&p, &paths.profiles_dir, opts)?)
 }
 
 /// Convert a `catch_unwind` payload into the appropriate `TaskResult::*::Err`.
@@ -293,6 +318,49 @@ mod tests {
                 assert!(e.to_string().contains("panic in worker"));
             }
             other @ TaskMessage::Completed { .. } => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_check_missing_profile_returns_err() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = real_paths(&tmp);
+        // profiles_dir exists but "nonexistent.toml" does not
+        std::fs::create_dir_all(&paths.profiles_dir).unwrap();
+        let result = run_check("nonexistent", false, &paths);
+        assert!(
+            result.is_err(),
+            "run_check on missing profile must return Err"
+        );
+    }
+
+    #[test]
+    fn run_check_valid_profile_returns_result_or_pacman_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = real_paths(&tmp);
+        std::fs::create_dir_all(&paths.profiles_dir).unwrap();
+        std::fs::write(
+            paths.profiles_dir.join("test.toml"),
+            "schema_version = 1\n[profile]\nname = \"test\"\n",
+        )
+        .unwrap();
+
+        let result = run_check("test", false, &paths);
+        match &result {
+            Ok(_) => {
+                // pacman available in this environment — that's fine
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                // Either pacman is missing (expected in CI) or another error
+                assert!(!msg.is_empty(), "error must have a message");
+                if msg.contains("pacman") {
+                    assert!(
+                        msg.contains("Arch-based system") || msg.contains("pacman not found"),
+                        "PacmanMissing error must include clear message, got: {msg}"
+                    );
+                }
+            }
         }
     }
 

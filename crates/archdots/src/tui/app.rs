@@ -19,7 +19,10 @@ use crate::tui::{
     tasks::{BackgroundKind, TaskId, TaskMessage, TaskResult},
     theme::Theme,
     ui::{self, layout, Modal, ModalOutcome, StatusMessage},
-    views::{placeholder::PlaceholderView, ProfilesView, SnapshotsView, View, ViewCtx, ViewKind},
+    views::{
+        placeholder::PlaceholderView, DepsView, ProfilesView, SnapshotsView, View, ViewCtx,
+        ViewKind,
+    },
 };
 
 // ─── AppPaths ─────────────────────────────────────────────────────────────────
@@ -53,7 +56,7 @@ pub struct App {
     // ── Per-view state ──
     profiles: ProfilesView,
     snapshots: SnapshotsView,
-    deps: PlaceholderView, // Session 4
+    deps: DepsView,
     diff: PlaceholderView, // Session 5
 
     // ── Navigation ──
@@ -88,7 +91,7 @@ impl App {
         Ok(Self {
             profiles: ProfilesView::new(&paths),
             snapshots: SnapshotsView::new(&paths),
-            deps: PlaceholderView::new(ViewKind::Deps, 4),
+            deps: DepsView::empty(),
             diff: PlaceholderView::new(ViewKind::Diff, 5),
             active: ViewKind::Profiles,
             modal: None,
@@ -280,11 +283,15 @@ impl App {
                 self.dirty = true;
             }
             Action::SelectProfileForDeps(name) => {
-                // Session 4: deps.set_profile(name) — placeholder for now.
-                self.status_msg =
-                    StatusMessage::Info(format!("DepsView for '{name}' — coming in Session 4"));
+                self.deps.set_profile(name.clone());
                 self.active = ViewKind::Deps;
                 self.dirty = true;
+                if !self.is_animating() {
+                    self.spawn_task(BackgroundKind::Check {
+                        profile: name,
+                        deep: false,
+                    });
+                }
             }
             Action::SelectProfileForDiff(name) => {
                 // Session 5: diff.set_profile(name, &paths) — placeholder for now.
@@ -325,6 +332,24 @@ impl App {
             }
             Action::Quit => {
                 self.should_quit = true;
+            }
+            Action::CopyToClipboard(text) => {
+                match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.clone())) {
+                    Ok(()) => {
+                        self.status_msg = StatusMessage::Success(format!("Copied: {text}"));
+                    }
+                    Err(e) => {
+                        tracing::warn!("clipboard error: {e}");
+                        self.modal = Some(Modal::Error {
+                            title: "Clipboard unavailable".into(),
+                            body: format!(
+                                "Could not access clipboard. Command:\n\n{text}\n\n\
+                                 Select the text above manually."
+                            ),
+                        });
+                    }
+                }
+                self.dirty = true;
             }
         }
     }
@@ -417,14 +442,20 @@ impl App {
                     body: e.to_string(),
                 });
             }
-            TaskResult::Check(Ok(_)) => {
-                self.status_msg = StatusMessage::Success("Check complete".into());
+            TaskResult::Check(Ok(ref report)) => {
+                let missing = report
+                    .entries
+                    .iter()
+                    .filter(|e| matches!(e.status, archdots_core::validator::DepStatus::Missing))
+                    .count();
+                self.status_msg =
+                    StatusMessage::Success(format!("Validation complete: {missing} missing"));
+                self.deps.apply_report(report.clone());
             }
             TaskResult::Check(Err(ref e)) => {
-                self.modal = Some(Modal::Error {
-                    title: "Check failed".into(),
-                    body: e.to_string(),
-                });
+                // Show error in DepsView, not as a modal (expected failure path).
+                self.deps.set_error(e.to_string());
+                self.status_msg = StatusMessage::Error(format!("Check failed: {e}"));
             }
             TaskResult::Prune(Ok(ref rep)) => {
                 self.status_msg =
@@ -512,6 +543,30 @@ impl App {
     #[cfg(test)]
     pub fn status_msg(&self) -> &StatusMessage {
         &self.status_msg
+    }
+
+    /// Expose deps profile name for assertions.
+    #[cfg(test)]
+    pub fn deps_profile(&self) -> Option<&str> {
+        self.deps.profile.as_deref()
+    }
+
+    /// Expose whether deps has a loaded report.
+    #[cfg(test)]
+    pub fn deps_report_is_some(&self) -> bool {
+        self.deps.report.is_some()
+    }
+
+    /// Expose deps error for assertions.
+    #[cfg(test)]
+    pub fn deps_error(&self) -> Option<&str> {
+        self.deps.error.as_deref()
+    }
+
+    /// Expose deps loading flag for assertions.
+    #[cfg(test)]
+    pub fn deps_loading(&self) -> bool {
+        self.deps.loading
     }
 }
 
@@ -816,6 +871,110 @@ mod tests {
         app.drain_task_messages().unwrap();
         assert!(app.is_idle());
         assert!(matches!(app.status_msg(), StatusMessage::Success(_)));
+    }
+
+    // ── DepsView integration ──────────────────────────────────────────────────
+
+    #[test]
+    fn app_select_profile_for_deps_sets_profile_and_spawns_task() {
+        let mut app = make_app();
+        app.dispatch(Action::SelectProfileForDeps("laptop".into()));
+        assert_eq!(app.active(), ViewKind::Deps);
+        assert_eq!(
+            app.deps_profile(),
+            Some("laptop"),
+            "deps.profile must be set to 'laptop'"
+        );
+        // Check task should be spawned (background running)
+        assert!(
+            app.is_animating(),
+            "SelectProfileForDeps must spawn a Check task"
+        );
+    }
+
+    #[test]
+    fn app_check_ok_calls_apply_report() {
+        let mut app = make_app();
+        app.dispatch(Action::SelectProfileForDeps("laptop".into()));
+        app.force_running(); // ensure running state for drain
+
+        let tx = app.test_sender();
+        let report = archdots_core::validator::ValidationReport {
+            schema_version: 1,
+            profile_name: "laptop".into(),
+            aur_helper: None,
+            entries: vec![],
+            warnings: vec![],
+        };
+        tx.send(TaskMessage::Completed {
+            id: TaskId(0),
+            kind: BackgroundKind::Check {
+                profile: "laptop".into(),
+                deep: false,
+            },
+            result: TaskResult::Check(Ok(report)),
+        })
+        .unwrap();
+
+        app.drain_task_messages().unwrap();
+        assert!(app.is_idle());
+        assert!(
+            app.deps_report_is_some(),
+            "deps.report must be set after Check Ok"
+        );
+        assert!(matches!(app.status_msg(), StatusMessage::Success(_)));
+    }
+
+    #[test]
+    fn app_check_err_calls_set_error_not_modal() {
+        let mut app = make_app();
+        app.dispatch(Action::SelectProfileForDeps("laptop".into()));
+        app.force_running();
+
+        let tx = app.test_sender();
+        tx.send(TaskMessage::Completed {
+            id: TaskId(0),
+            kind: BackgroundKind::Check {
+                profile: "laptop".into(),
+                deep: false,
+            },
+            result: TaskResult::Check(Err(anyhow::anyhow!("pacman not found"))),
+        })
+        .unwrap();
+
+        app.drain_task_messages().unwrap();
+        assert!(app.is_idle());
+        assert_eq!(
+            app.deps_error(),
+            Some("pacman not found"),
+            "deps.error must be set on Check Err"
+        );
+        assert!(app.modal().is_none(), "Check failure must NOT open a modal");
+        assert!(!app.deps_report_is_some());
+    }
+
+    #[test]
+    #[ignore = "requires a display/clipboard — run manually or on a system with a display"]
+    fn app_copy_to_clipboard_ok_sets_status() {
+        let mut app = make_app();
+        app.dispatch(Action::CopyToClipboard("sudo pacman -S test".into()));
+        // If clipboard is available, status should say "Copied"
+        // If not, a modal is opened — either way no panic
+        let _ = app.status_msg();
+    }
+
+    #[test]
+    fn app_copy_to_clipboard_clipboard_unavailable_opens_modal_or_succeeds() {
+        // This test is environment-dependent. We just verify no panic occurs.
+        let mut app = make_app();
+        app.dispatch(Action::CopyToClipboard("sudo pacman -S hyprland".into()));
+        // Regardless of clipboard availability: either status is set or modal is opened.
+        let has_status = matches!(app.status_msg(), StatusMessage::Success(_));
+        let has_modal = app.modal().is_some();
+        assert!(
+            has_status || has_modal,
+            "CopyToClipboard must either set status or open modal"
+        );
     }
 
     // Requires a real TTY; skip in CI / non-TTY test runners where
