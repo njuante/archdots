@@ -44,14 +44,12 @@ impl Theme {
     /// Tests pass a deterministic closure so multiple tests can run in
     /// parallel without touching the real process environment.
     pub(crate) fn detect_with<F: Fn(&str) -> Option<String>>(get: F) -> Self {
-        let use_color = get("NO_COLOR").is_none()
-            && get("TERM").map(|t| t != "dumb").unwrap_or(true);
+        let use_color = get("NO_COLOR").is_none() && get("TERM").is_none_or(|t| t != "dumb");
 
         // POSIX: LC_ALL overrides LANG.
         let use_unicode = get("LC_ALL")
             .or_else(|| get("LANG"))
-            .map(|l| l.contains("UTF-8") || l.contains("utf8"))
-            .unwrap_or(false);
+            .is_some_and(|l| l.contains("UTF-8") || l.contains("utf8"));
 
         if use_color {
             Self {
