@@ -19,10 +19,7 @@ use crate::tui::{
     tasks::{BackgroundKind, TaskId, TaskMessage, TaskResult},
     theme::Theme,
     ui::{self, layout, Modal, ModalOutcome, StatusMessage},
-    views::{
-        placeholder::PlaceholderView, DepsView, ProfilesView, SnapshotsView, View, ViewCtx,
-        ViewKind,
-    },
+    views::{DepsView, DiffView, ProfilesView, SnapshotsView, View, ViewCtx, ViewKind},
 };
 
 // ─── AppPaths ─────────────────────────────────────────────────────────────────
@@ -57,7 +54,7 @@ pub struct App {
     profiles: ProfilesView,
     snapshots: SnapshotsView,
     deps: DepsView,
-    diff: PlaceholderView, // Session 5
+    diff: DiffView,
 
     // ── Navigation ──
     active: ViewKind,
@@ -92,7 +89,7 @@ impl App {
             profiles: ProfilesView::new(&paths),
             snapshots: SnapshotsView::new(&paths),
             deps: DepsView::empty(),
-            diff: PlaceholderView::new(ViewKind::Diff, 5),
+            diff: DiffView::empty(),
             active: ViewKind::Profiles,
             modal: None,
             status_msg: StatusMessage::None,
@@ -117,9 +114,9 @@ impl App {
     /// propagation.
     #[allow(clippy::unnecessary_wraps)]
     pub fn drain_task_messages(&mut self) -> anyhow::Result<()> {
-        while let Ok(TaskMessage::Completed { result, .. }) = self.rx.try_recv() {
+        while let Ok(TaskMessage::Completed { result, kind, .. }) = self.rx.try_recv() {
             self.background = BackgroundState::Idle;
-            self.handle_task_result(&result);
+            self.handle_task_result(&result, &kind);
         }
         Ok(())
     }
@@ -294,9 +291,8 @@ impl App {
                 }
             }
             Action::SelectProfileForDiff(name) => {
-                // Session 5: diff.set_profile(name, &paths) — placeholder for now.
-                self.status_msg =
-                    StatusMessage::Info(format!("DiffView for '{name}' — coming in Session 5"));
+                let paths = self.paths.clone();
+                self.diff.set_profile(&name, &paths);
                 self.active = ViewKind::Diff;
                 self.dirty = true;
             }
@@ -394,7 +390,7 @@ impl App {
         }
     }
 
-    fn handle_task_result(&mut self, result: &TaskResult) {
+    fn handle_task_result(&mut self, result: &TaskResult, kind: &BackgroundKind) {
         match result {
             TaskResult::Apply(Ok(ref rep)) => {
                 if rep.rolled_back {
@@ -412,6 +408,17 @@ impl App {
                 let paths = self.paths.clone();
                 self.snapshots.refresh(&paths);
                 self.profiles.refresh(&paths);
+                // Refresh DiffView if it's active and shows the same profile.
+                if let BackgroundKind::Apply {
+                    profile: ref applied_profile,
+                } = *kind
+                {
+                    if matches!(self.active, ViewKind::Diff)
+                        && self.diff.profile.as_deref() == Some(applied_profile.as_str())
+                    {
+                        self.diff.set_profile(applied_profile, &paths);
+                    }
+                }
             }
             TaskResult::Apply(Err(ref e)) => {
                 self.modal = Some(Modal::Error {
@@ -567,6 +574,24 @@ impl App {
     #[cfg(test)]
     pub fn deps_loading(&self) -> bool {
         self.deps.loading
+    }
+
+    /// Expose diff profile name for assertions.
+    #[cfg(test)]
+    pub fn diff_profile(&self) -> Option<&str> {
+        self.diff.profile.as_deref()
+    }
+
+    /// Expose diff item kind at a given index for assertions.
+    #[cfg(test)]
+    pub fn diff_item_kind(&self, idx: usize) -> Option<crate::tui::views::DiffItemKind> {
+        self.diff.item_kind(idx)
+    }
+
+    /// Expose diff error for assertions.
+    #[cfg(test)]
+    pub fn diff_error(&self) -> Option<&str> {
+        self.diff.error.as_deref()
     }
 }
 
@@ -951,6 +976,176 @@ mod tests {
         );
         assert!(app.modal().is_none(), "Check failure must NOT open a modal");
         assert!(!app.deps_report_is_some());
+    }
+
+    // ── DiffView integration ──────────────────────────────────────────────────
+
+    #[test]
+    fn app_select_profile_for_diff_sets_profile_and_switches() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+
+        let profile_content = "schema_version = 1\n\n[profile]\nname = \"rice\"\n\n[dependencies]\n\n[hooks]\n\n[[files]]\nid = \"f0\"\nsource = \"src\"\ntarget = \"~/.src\"\n";
+        std::fs::write(profiles_dir.join("rice.toml"), profile_content).unwrap();
+        std::fs::write(home.join("src"), "content").unwrap();
+
+        let paths = AppPaths {
+            home: home.clone(),
+            profiles_dir,
+            data_home: tmp.path().join("data"),
+            state_home: tmp.path().join("state"),
+        };
+        let mut app = App::new(paths, Theme::detect()).unwrap();
+        app.dispatch(Action::SelectProfileForDiff("rice".into()));
+
+        assert_eq!(app.active(), ViewKind::Diff, "must switch to Diff view");
+        assert_eq!(app.diff_profile(), Some("rice"), "diff.profile must be set");
+    }
+
+    #[test]
+    fn app_select_profile_for_diff_is_synchronous_no_task() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        let profile_content =
+            "schema_version = 1\n\n[profile]\nname = \"p\"\n\n[dependencies]\n\n[hooks]\n";
+        std::fs::write(profiles_dir.join("p.toml"), profile_content).unwrap();
+
+        let paths = AppPaths {
+            home,
+            profiles_dir,
+            data_home: tmp.path().join("data"),
+            state_home: tmp.path().join("state"),
+        };
+        let mut app = App::new(paths, Theme::detect()).unwrap();
+        app.dispatch(Action::SelectProfileForDiff("p".into()));
+
+        // set_profile is sync: no background task spawned
+        assert!(
+            app.is_idle(),
+            "SelectProfileForDiff must NOT spawn a background task"
+        );
+    }
+
+    #[test]
+    fn app_apply_ok_when_active_diff_same_profile_refreshes_diff() {
+        use crate::tui::views::DiffItemKind;
+        use std::os::unix::fs::symlink;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+
+        let src_file = home.join("dotfile");
+        std::fs::write(&src_file, "content").unwrap();
+        let profile_content = "schema_version = 1\n\n[profile]\nname = \"test\"\n\n[dependencies]\n\n[hooks]\n\n[[files]]\nid = \"f0\"\nsource = \"dotfile\"\ntarget = \"~/.dotfile\"\n".to_string();
+        std::fs::write(profiles_dir.join("test.toml"), &profile_content).unwrap();
+
+        let paths = AppPaths {
+            home: home.clone(),
+            profiles_dir,
+            data_home: tmp.path().join("data"),
+            state_home: tmp.path().join("state"),
+        };
+        let mut app = App::new(paths, Theme::detect()).unwrap();
+
+        // Step 1: select profile for diff — target absent, item is Missing
+        app.dispatch(Action::SelectProfileForDiff("test".into()));
+        assert_eq!(app.active(), ViewKind::Diff);
+        assert_eq!(
+            app.diff_item_kind(0),
+            Some(DiffItemKind::Missing),
+            "before apply: must be Missing"
+        );
+
+        // Step 2: simulate apply by creating the symlink
+        let target = home.join(".dotfile");
+        symlink(&src_file, &target).unwrap();
+
+        // Step 3: deliver Apply(Ok) on the channel
+        app.force_running();
+        let tx = app.test_sender();
+        let report = archdots_core::linker::ApplyReport {
+            journal_id: archdots_core::journal::JournalId::new(),
+            snapshot_id: None,
+            applied: vec![],
+            rolled_back: false,
+        };
+        tx.send(TaskMessage::Completed {
+            id: TaskId(0),
+            kind: BackgroundKind::Apply {
+                profile: "test".into(),
+            },
+            result: TaskResult::Apply(Ok(report)),
+        })
+        .unwrap();
+        app.drain_task_messages().unwrap();
+        assert!(app.is_idle());
+
+        // Step 4: diff was refreshed; item should now be Owned
+        assert_eq!(
+            app.diff_item_kind(0),
+            Some(DiffItemKind::Owned),
+            "after apply: item must be Owned (symlink is ours)"
+        );
+    }
+
+    #[test]
+    fn app_apply_ok_different_profile_does_not_refresh_diff() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+
+        std::fs::write(home.join("dotfile"), "content").unwrap();
+        let profile_content = "schema_version = 1\n\n[profile]\nname = \"alpha\"\n\n[dependencies]\n\n[hooks]\n\n[[files]]\nid = \"f0\"\nsource = \"dotfile\"\ntarget = \"~/.dotfile\"\n";
+        std::fs::write(profiles_dir.join("alpha.toml"), profile_content).unwrap();
+
+        let paths = AppPaths {
+            home: home.clone(),
+            profiles_dir,
+            data_home: tmp.path().join("data"),
+            state_home: tmp.path().join("state"),
+        };
+        let mut app = App::new(paths, Theme::detect()).unwrap();
+        app.dispatch(Action::SelectProfileForDiff("alpha".into()));
+
+        // Apply completes for a DIFFERENT profile ("beta")
+        app.force_running();
+        let tx = app.test_sender();
+        let report = archdots_core::linker::ApplyReport {
+            journal_id: archdots_core::journal::JournalId::new(),
+            snapshot_id: None,
+            applied: vec![],
+            rolled_back: false,
+        };
+        tx.send(TaskMessage::Completed {
+            id: TaskId(0),
+            kind: BackgroundKind::Apply {
+                profile: "beta".into(), // different profile
+            },
+            result: TaskResult::Apply(Ok(report)),
+        })
+        .unwrap();
+        app.drain_task_messages().unwrap();
+
+        // diff.profile should still be "alpha", unchanged
+        assert_eq!(app.diff_profile(), Some("alpha"));
     }
 
     #[test]
