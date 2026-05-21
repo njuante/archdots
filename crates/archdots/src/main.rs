@@ -9,6 +9,8 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::{fmt, EnvFilter};
 
 mod cmd;
+mod diff_util;
+mod tui;
 mod xdg;
 
 // ── CLI types ─────────────────────────────────────────────────────────────────
@@ -118,6 +120,8 @@ enum Commands {
         #[arg(long)]
         verbose: bool,
     },
+    /// Launch the interactive TUI.
+    Tui,
 }
 
 #[derive(Debug, Subcommand)]
@@ -165,10 +169,14 @@ enum SnapshotsCmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    fmt()
-        .with_env_filter(EnvFilter::try_new(&cli.log_level)?)
-        .with_target(false)
-        .init();
+    // The TUI sets up its own file-based tracing subscriber (§9.1 of the
+    // Phase 4 design). Skip the stderr subscriber for that subcommand.
+    if !matches!(cli.command, Commands::Tui) {
+        fmt()
+            .with_env_filter(EnvFilter::try_new(&cli.log_level)?)
+            .with_target(false)
+            .init();
+    }
 
     match cli.command {
         Commands::Init {
@@ -212,6 +220,8 @@ fn main() -> Result<()> {
         },
 
         Commands::Recover { profile, yes } => cmd::recover::run(profile.as_deref(), yes),
+
+        Commands::Tui => cmd::tui::run(),
 
         Commands::Check {
             profile,

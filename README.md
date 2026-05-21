@@ -4,7 +4,7 @@ Dotfile manager for Arch Linux ricers.
 
 ![CI](https://github.com/njuante/archdots/actions/workflows/ci.yml/badge.svg)
 
-> archdots is at v0.3.0. Core apply/rollback pipeline and dependency validation are functional. CLI offers init, profile, apply, diff, rollback, history, snapshots, recover, and check.
+> archdots is at v0.4.0. Core apply/rollback pipeline and dependency validation are functional. CLI offers init, profile, apply, diff, rollback, history, snapshots, recover, check, and an interactive TUI.
 
 ## Roadmap
 
@@ -13,7 +13,7 @@ Dotfile manager for Arch Linux ricers.
 | 1 | Detection, profiles, CLI scaffolding | ✅ done |
 | 2 | Atomic apply with rollback, snapshots, journal, recovery | ✅ done |
 | 3 | Dependency validation (`archdots check`) | ✅ done |
-| 4 | TUI | planned |
+| 4 | TUI | ✅ done |
 | 5 | README export | planned |
 
 ## What works today
@@ -98,6 +98,70 @@ archdots snapshots prune --keep 5
 ```sh
 archdots recover
 ```
+
+**`archdots tui`** — launch the interactive terminal UI:
+
+```sh
+archdots tui
+```
+
+The TUI provides four tab views. Log output is written to `$XDG_STATE_HOME/archdots/tui.log`.
+
+### TUI keybindings
+
+| Key | Action |
+|-----|--------|
+| `1` | Profiles view |
+| `2` | Snapshots view |
+| `3` | Deps view |
+| `4` | Diff view |
+| `Tab` | Next tab |
+| `?` | Toggle help overlay |
+| `q` / `Ctrl+C` | Quit |
+
+**Profiles view**
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move cursor down / up |
+| `Enter` | Apply selected profile |
+| `r` | Rollback selected profile |
+| `c` | Show deps for profile |
+| `d` | Show diff for profile |
+| `x` | Delete profile |
+| `/` | Fuzzy search |
+| `Esc` | Clear search |
+
+**Snapshots view**
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move cursor down / up |
+| `r` | Restore (rollback to) snapshot |
+| `x` | Prune (delete) snapshot |
+| `i` | Toggle detail panel |
+| `/` | Fuzzy search |
+
+**Deps view**
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate within section |
+| `J` / `K` | Jump to next / previous section |
+| `g` / `G` | First / last entry |
+| `c` | Copy install command for selected missing dep |
+| `R` | Re-run check |
+| `D` | Toggle `--deep` and re-run |
+
+**Diff view**
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move file cursor |
+| `J` / `K` | Scroll diff body down / up |
+| `g` / `G` | First / last file |
+| `a` | Apply this profile |
+| `q` | Back to Profiles view |
 
 **`archdots check <profile>`** — validate a profile's dependency declarations against the installed package database:
 

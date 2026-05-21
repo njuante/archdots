@@ -9,26 +9,8 @@ use crate::xdg;
 
 pub fn run_list() -> Result<()> {
     let dir = xdg::profiles_dir()?;
-
-    if !dir.exists() {
-        println!("No profiles found.");
-        return Ok(());
-    }
-
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .with_context(|| format!("cannot read profiles directory {}", dir.display()))?
-        .filter_map(|res| {
-            let entry = res.ok()?;
-            let path = entry.path();
-            if path.extension()?.to_str()? == "toml" {
-                Some(path.file_stem()?.to_str()?.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    names.sort();
+    let names = Profile::list_names(&dir)
+        .with_context(|| format!("cannot read profiles directory {}", dir.display()))?;
 
     if names.is_empty() {
         println!("No profiles found.");

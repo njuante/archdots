@@ -106,6 +106,15 @@ pub struct LinkPlan {
     pub items: Vec<PlannedLink>,
 }
 
+/// Options driving [`Linker::rollback_to_snapshot`].
+#[derive(Debug, Clone)]
+pub struct RollbackOptions {
+    /// If `true`, continue restoring even after per-file errors.
+    pub continue_on_error: bool,
+    /// State directory hosting the lockfile (typically `$XDG_STATE_HOME`).
+    pub state_home: PathBuf,
+}
+
 /// Options driving [`Linker::apply`] and [`Linker::rollback`].
 #[derive(Debug, Clone)]
 pub struct ApplyOptions {
@@ -509,6 +518,139 @@ impl<'a> Linker<'a> {
                     status: JournalStatus::Failed,
                     error: Some(e.to_string()),
                     supersedes: Some(initial_id),
+                })?;
+                Err(e)
+            }
+        }
+    }
+
+    /// Rollback to a specific snapshot, regardless of which profile it belongs
+    /// to or whether there's a more recent successful transaction.
+    ///
+    /// The profile name is read from the snapshot manifest. Journal chain:
+    /// 1. `InProgress` (`snapshot_id: None`, `supersedes: None`)
+    /// 2. `InProgress` (`snapshot_id: Some(id)`, `supersedes: Entry1`)
+    /// 3. `Success | Partial | Failed` (`supersedes: Entry2`)
+    ///
+    /// # Errors
+    ///
+    /// - [`crate::error::SnapshotError::NotFound`] if the snapshot is unknown.
+    /// - [`LinkerError::OrphanedTransaction`] if the profile has an open in-progress entry.
+    /// - [`crate::error::LockError::Busy`] if another process holds the apply lock.
+    #[allow(clippy::too_many_lines)]
+    pub fn rollback_to_snapshot(
+        &self,
+        snapshot_id: &SnapshotId,
+        opts: &RollbackOptions,
+    ) -> Result<ApplyReport, CoreError> {
+        // 1. Load snapshot → derive profile.
+        let snapshot = self.snapshots.get(snapshot_id)?;
+        let profile = snapshot.manifest.profile.clone();
+
+        // 2. Acquire lock.
+        let _lock = ApplyLock::acquire(&opts.state_home)?;
+
+        // 3. Orphan check (after lock, same as apply/rollback).
+        let orphans = self.journal.orphaned_in_progress()?;
+        if let Some(o) = orphans.into_iter().find(|e| e.profile == profile) {
+            return Err(LinkerError::OrphanedTransaction { id: o.id }.into());
+        }
+
+        // 4. Entry 1: InProgress, no snapshot_id yet.
+        let initial_id = JournalId::new();
+        self.journal.append(&JournalEntry {
+            schema_version: 1,
+            id: initial_id.clone(),
+            ts: OffsetDateTime::now_utc(),
+            profile: profile.clone(),
+            action: JournalAction::Rollback,
+            snapshot_id: None,
+            links: Vec::new(),
+            status: JournalStatus::InProgress,
+            error: None,
+            supersedes: None,
+        })?;
+
+        // 5. Entry 2: InProgress, with snapshot_id.
+        let mid_id = JournalId::new();
+        self.journal.append(&JournalEntry {
+            schema_version: 1,
+            id: mid_id.clone(),
+            ts: OffsetDateTime::now_utc(),
+            profile: profile.clone(),
+            action: JournalAction::Rollback,
+            snapshot_id: Some(snapshot_id.clone()),
+            links: Vec::new(),
+            status: JournalStatus::InProgress,
+            error: None,
+            supersedes: Some(initial_id.clone()),
+        })?;
+
+        // 6. Restore.
+        let restore_result = self.snapshots.restore(
+            snapshot_id,
+            RestoreOptions {
+                dry_run: false,
+                continue_on_error: opts.continue_on_error,
+            },
+        );
+
+        // 7. Entry 3: final result.
+        match restore_result {
+            Ok(rep) => {
+                let links: Vec<LinkRecord> = rep
+                    .restored
+                    .iter()
+                    .map(|p| LinkRecord {
+                        source: PathBuf::new(),
+                        target: p.clone(),
+                        prior_state: PriorState::Absent,
+                        outcome: LinkOutcome::Linked,
+                    })
+                    .collect();
+
+                let status = if rep.skipped.is_empty() {
+                    JournalStatus::Success
+                } else {
+                    JournalStatus::Partial
+                };
+
+                self.journal.append(&JournalEntry {
+                    schema_version: 1,
+                    id: JournalId::new(),
+                    ts: OffsetDateTime::now_utc(),
+                    profile: profile.clone(),
+                    action: JournalAction::Rollback,
+                    snapshot_id: Some(snapshot_id.clone()),
+                    links: links.clone(),
+                    status,
+                    error: if rep.skipped.is_empty() {
+                        None
+                    } else {
+                        Some(format!("{} entries skipped", rep.skipped.len()))
+                    },
+                    supersedes: Some(mid_id),
+                })?;
+
+                Ok(ApplyReport {
+                    journal_id: initial_id,
+                    snapshot_id: Some(snapshot_id.clone()),
+                    applied: links,
+                    rolled_back: true,
+                })
+            }
+            Err(e) => {
+                self.journal.append(&JournalEntry {
+                    schema_version: 1,
+                    id: JournalId::new(),
+                    ts: OffsetDateTime::now_utc(),
+                    profile: profile.clone(),
+                    action: JournalAction::Rollback,
+                    snapshot_id: Some(snapshot_id.clone()),
+                    links: Vec::new(),
+                    status: JournalStatus::Failed,
+                    error: Some(e.to_string()),
+                    supersedes: Some(mid_id),
                 })?;
                 Err(e)
             }
@@ -1247,6 +1389,180 @@ mod tests {
             .rollback("p", opts(e.home.path(), e.state.path()))
             .unwrap();
         assert_eq!(fs::read(&tgt).unwrap(), b"original");
+    }
+
+    // ── ROLLBACK_TO_SNAPSHOT ─────────────────────────────────────────────────
+
+    fn rollback_opts(state_home: &Path) -> RollbackOptions {
+        RollbackOptions {
+            continue_on_error: true,
+            state_home: state_home.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn rollback_to_snapshot_valid_report_and_journal() {
+        let e = env();
+        let src = e.home.path().join("src");
+        write_file(&src, b"new");
+        let tgt = e.home.path().join("tgt");
+        write_file(&tgt, b"original");
+
+        let linker = Linker::new(&e.snaps, &e.journal);
+        let specs = [LinkSpec {
+            source: src,
+            target: tgt.clone(),
+        }];
+        linker
+            .apply(
+                linker.plan("p", &specs, e.home.path()).unwrap(),
+                opts(e.home.path(), e.state.path()),
+            )
+            .unwrap();
+        // Target is now a symlink; get the snapshot id from the journal.
+        let snap_id = e
+            .journal
+            .iter()
+            .unwrap()
+            .flatten()
+            .find_map(|en| en.snapshot_id)
+            .expect("snapshot_id must be set after apply");
+
+        let report = linker
+            .rollback_to_snapshot(&snap_id, &rollback_opts(e.state.path()))
+            .unwrap();
+
+        assert!(report.rolled_back, "rolled_back must be true");
+        assert_eq!(report.snapshot_id, Some(snap_id.clone()));
+        // Target restored to regular file.
+        assert!(!fs::symlink_metadata(&tgt).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&tgt).unwrap(), b"original");
+
+        // Journal: 3 apply entries + 3 rollback_to_snapshot entries = 6.
+        let entries: Vec<_> = e.journal.iter().unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(entries.len(), 6);
+        assert_eq!(entries[3].action, JournalAction::Rollback);
+        assert_eq!(entries[3].status, JournalStatus::InProgress);
+        assert!(entries[3].snapshot_id.is_none());
+        assert_eq!(entries[4].action, JournalAction::Rollback);
+        assert_eq!(entries[4].status, JournalStatus::InProgress);
+        assert_eq!(entries[4].snapshot_id, Some(snap_id));
+        assert_eq!(entries[5].action, JournalAction::Rollback);
+        assert_eq!(entries[5].status, JournalStatus::Success);
+    }
+
+    #[test]
+    fn rollback_to_snapshot_not_found_errors() {
+        let e = env();
+        let linker = Linker::new(&e.snaps, &e.journal);
+        let fake_id = SnapshotId::new();
+        let result = linker.rollback_to_snapshot(&fake_id, &rollback_opts(e.state.path()));
+        assert!(
+            matches!(
+                result,
+                Err(CoreError::Snapshot(crate::error::SnapshotError::NotFound(
+                    _
+                )))
+            ),
+            "expected SnapshotError::NotFound, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rollback_to_snapshot_lock_busy_returns_error() {
+        let e = env();
+        // First do an apply so there is a valid snapshot.
+        let src = e.home.path().join("src");
+        write_file(&src, b"x");
+        let tgt = e.home.path().join("tgt");
+        let linker = Linker::new(&e.snaps, &e.journal);
+        let specs = [LinkSpec {
+            source: src,
+            target: tgt,
+        }];
+        linker
+            .apply(
+                linker.plan("p", &specs, e.home.path()).unwrap(),
+                opts(e.home.path(), e.state.path()),
+            )
+            .unwrap();
+        let snap_id = e
+            .journal
+            .iter()
+            .unwrap()
+            .flatten()
+            .find_map(|en| en.snapshot_id)
+            .unwrap();
+
+        // Hold the lock from another thread.
+        let state_home = e.state.path().to_path_buf();
+        let (tx_ready, rx_ready) = std::sync::mpsc::channel();
+        let (tx_release, rx_release) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let _lock = ApplyLock::acquire(&state_home).unwrap();
+            tx_ready.send(()).unwrap();
+            rx_release.recv().unwrap();
+        });
+        rx_ready.recv().unwrap();
+
+        let result = linker.rollback_to_snapshot(&snap_id, &rollback_opts(e.state.path()));
+        tx_release.send(()).unwrap();
+        handle.join().unwrap();
+        assert!(
+            matches!(result, Err(CoreError::Lock(_))),
+            "expected LockError::Busy, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rollback_to_snapshot_round_trip_consistent() {
+        let e = env();
+        // Setup: file at target with original content.
+        let src = e.home.path().join("src");
+        write_file(&src, b"source-content");
+        let tgt = e.home.path().join("tgt");
+        write_file(&tgt, b"original-content");
+
+        let linker = Linker::new(&e.snaps, &e.journal);
+        let specs = [LinkSpec {
+            source: src.clone(),
+            target: tgt.clone(),
+        }];
+
+        // 1. Apply: creates symlink, pre-apply snapshot captures original.
+        linker
+            .apply(
+                linker.plan("p", &specs, e.home.path()).unwrap(),
+                opts(e.home.path(), e.state.path()),
+            )
+            .unwrap();
+        assert!(fs::symlink_metadata(&tgt).unwrap().file_type().is_symlink());
+
+        let snap_id = e
+            .journal
+            .iter()
+            .unwrap()
+            .flatten()
+            .find_map(|en| en.snapshot_id)
+            .unwrap();
+
+        // 2. rollback_to_snapshot: restores original file.
+        linker
+            .rollback_to_snapshot(&snap_id, &rollback_opts(e.state.path()))
+            .unwrap();
+        assert_eq!(fs::read(&tgt).unwrap(), b"original-content");
+        assert!(!fs::symlink_metadata(&tgt).unwrap().file_type().is_symlink());
+
+        // 3. Apply again: should succeed (no orphans, no lock conflicts).
+        let report = linker
+            .apply(
+                linker.plan("p", &specs, e.home.path()).unwrap(),
+                opts(e.home.path(), e.state.path()),
+            )
+            .unwrap();
+        assert!(!report.rolled_back);
+        assert!(fs::symlink_metadata(&tgt).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_link(&tgt).unwrap(), src);
     }
 
     // ── MID-APPLY FAILURE & FULL ROLLBACK ────────────────────────────────────

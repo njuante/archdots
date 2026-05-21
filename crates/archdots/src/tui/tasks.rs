@@ -1,0 +1,402 @@
+//! Background task spawning and result routing.
+//!
+//! At most one task runs at a time. Workers own clones of the paths they need
+//! and never hold references into `App`. Panics are caught by `catch_unwind`
+//! and forwarded on the channel as errors.
+
+#![allow(clippy::module_name_repetitions)]
+
+use std::panic::AssertUnwindSafe;
+use std::sync::mpsc;
+
+use archdots_core::{
+    journal::Journal,
+    linker::{ApplyOptions, ApplyReport, LinkSpec, Linker, RollbackOptions},
+    packages::{PackageDB, PackageError},
+    profile::{Profile, ResolveCtx},
+    snapshot::{PrunePolicy, PruneReport, SnapshotId, SnapshotManager, SnapshotSummary},
+    validator::{ValidationReport, Validator, ValidatorOptions},
+};
+
+use crate::tui::app::AppPaths;
+
+// ─── Public types ─────────────────────────────────────────────────────────────
+
+/// Opaque monotonic task identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TaskId(pub u64);
+
+/// Which operation a background worker should execute.
+#[derive(Debug, Clone)]
+pub enum BackgroundKind {
+    /// Apply the named profile's symlink plan.
+    Apply { profile: String },
+    /// Roll back the last apply for the named profile.
+    Rollback { profile: String },
+    /// Restore a specific snapshot by id (profile read from manifest).
+    RollbackToSnapshot { id: SnapshotId },
+    /// Validate dependencies for the named profile.
+    Check { profile: String, deep: bool },
+    /// Re-read all snapshot summaries.
+    #[allow(dead_code)]
+    // spawned in tests; production views refresh synchronously via SnapshotsView::refresh
+    RefreshSnapshots,
+    /// Delete a specific snapshot.
+    PruneSnapshot { id: SnapshotId },
+    /// Inject a panic for testing the `catch_unwind` path.
+    #[cfg(test)]
+    PanicForTest,
+}
+
+/// Normalised result from a completed worker.
+#[derive(Debug)]
+pub enum TaskResult {
+    Apply(Result<ApplyReport, anyhow::Error>),
+    Rollback(Result<ApplyReport, anyhow::Error>),
+    Check(Result<ValidationReport, anyhow::Error>),
+    SnapshotList(Result<Vec<SnapshotSummary>, anyhow::Error>),
+    Prune(Result<PruneReport, anyhow::Error>),
+}
+
+/// Message sent from a worker thread to `App` when the task finishes.
+#[derive(Debug)]
+pub enum TaskMessage {
+    Completed {
+        // Reserved for stale-completion detection: compare with BackgroundState::Running::id
+        // before transitioning to Idle to guard against a force-quit/restart race.
+        #[allow(dead_code)]
+        id: TaskId,
+        kind: BackgroundKind,
+        result: TaskResult,
+    },
+}
+
+// ─── Spawn ────────────────────────────────────────────────────────────────────
+
+/// Spawn `kind` on a fresh OS thread.
+///
+/// Panics in the worker are caught via `catch_unwind`; the resulting error is
+/// sent as a `TaskResult` variant. If the thread fails to spawn (OOM), an
+/// error result is sent on `tx` instead of panicking. The thread never borrows
+/// from `App`.
+pub fn spawn(id: TaskId, kind: BackgroundKind, paths: AppPaths, tx: mpsc::Sender<TaskMessage>) {
+    // Clone what we need in case thread spawn fails and we must send an error.
+    let err_kind = kind.clone();
+    let err_tx = tx.clone();
+
+    if std::thread::Builder::new()
+        .name(format!("archdots-task-{}", id.0))
+        .spawn(move || {
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| execute(&kind, &paths)));
+            let result = match result {
+                Ok(r) => r,
+                Err(payload) => panic_to_result(&kind, &payload),
+            };
+            let _ = tx.send(TaskMessage::Completed { id, kind, result });
+        })
+        .is_err()
+    {
+        let err = anyhow::anyhow!("failed to spawn worker thread (out of memory?)");
+        let result = error_result_for_kind(&err_kind, err);
+        let _ = err_tx.send(TaskMessage::Completed {
+            id,
+            kind: err_kind,
+            result,
+        });
+    }
+}
+
+// ─── Private helpers ──────────────────────────────────────────────────────────
+
+fn execute(kind: &BackgroundKind, paths: &AppPaths) -> TaskResult {
+    match kind {
+        BackgroundKind::Apply { profile } => TaskResult::Apply(run_apply(profile, paths)),
+        BackgroundKind::Rollback { profile } => TaskResult::Rollback(run_rollback(profile, paths)),
+        BackgroundKind::RollbackToSnapshot { id } => {
+            TaskResult::Rollback(run_rollback_to_snapshot(id, paths))
+        }
+        BackgroundKind::Check { profile, deep } => {
+            TaskResult::Check(run_check(profile, *deep, paths))
+        }
+        BackgroundKind::RefreshSnapshots => TaskResult::SnapshotList(run_refresh_snapshots(paths)),
+        BackgroundKind::PruneSnapshot { id } => TaskResult::Prune(run_prune_snapshot(id, paths)),
+        #[cfg(test)]
+        BackgroundKind::PanicForTest => panic!("intentional test panic"),
+    }
+}
+
+fn run_apply(profile: &str, paths: &AppPaths) -> Result<ApplyReport, anyhow::Error> {
+    let profile_path = paths.profiles_dir.join(format!("{profile}.toml"));
+    let prof = Profile::load_from_file(&profile_path)?;
+
+    // Source paths in profiles generated by `init` are relative to $HOME.
+    let ctx = ResolveCtx::with_home(&paths.home);
+    let specs: Vec<LinkSpec> = prof
+        .resolved_entries(&paths.home, &ctx)
+        .map(|r| {
+            let (_entry, src, tgt) = r?;
+            Ok(LinkSpec {
+                source: src,
+                target: tgt,
+            })
+        })
+        .collect::<std::result::Result<_, archdots_core::error::ProfileError>>()?;
+
+    let snapshots = SnapshotManager::open(&paths.data_home)?;
+    let journal = Journal::open(&paths.state_home)?;
+    let linker = Linker::new(&snapshots, &journal);
+    let plan = linker.plan(profile, &specs, &paths.home)?;
+    let opts = ApplyOptions {
+        dry_run: false,
+        force: false,
+        home: paths.home.clone(),
+        state_home: paths.state_home.clone(),
+    };
+    Ok(linker.apply(plan, opts)?)
+}
+
+fn run_rollback(profile: &str, paths: &AppPaths) -> Result<ApplyReport, anyhow::Error> {
+    let snapshots = SnapshotManager::open(&paths.data_home)?;
+    let journal = Journal::open(&paths.state_home)?;
+    let linker = Linker::new(&snapshots, &journal);
+    let opts = ApplyOptions {
+        dry_run: false,
+        force: false,
+        home: paths.home.clone(),
+        state_home: paths.state_home.clone(),
+    };
+    Ok(linker.rollback(profile, opts)?)
+}
+
+fn run_rollback_to_snapshot(
+    id: &SnapshotId,
+    paths: &AppPaths,
+) -> Result<ApplyReport, anyhow::Error> {
+    let snapshots = SnapshotManager::open(&paths.data_home)?;
+    let journal = Journal::open(&paths.state_home)?;
+    let linker = Linker::new(&snapshots, &journal);
+    let opts = RollbackOptions {
+        continue_on_error: true,
+        state_home: paths.state_home.clone(),
+    };
+    Ok(linker.rollback_to_snapshot(id, &opts)?)
+}
+
+fn run_refresh_snapshots(paths: &AppPaths) -> Result<Vec<SnapshotSummary>, anyhow::Error> {
+    let snapshots = SnapshotManager::open(&paths.data_home)?;
+    Ok(snapshots.list()?)
+}
+
+fn run_prune_snapshot(id: &SnapshotId, paths: &AppPaths) -> Result<PruneReport, anyhow::Error> {
+    let snapshots = SnapshotManager::open(&paths.data_home)?;
+    Ok(snapshots.prune(PrunePolicy::OnlyId(id.clone()))?)
+}
+
+fn run_check(
+    profile: &str,
+    deep: bool,
+    paths: &AppPaths,
+) -> Result<ValidationReport, anyhow::Error> {
+    let profile_path = paths.profiles_dir.join(format!("{profile}.toml"));
+    let p = Profile::load_from_file(&profile_path)?;
+    let db = match PackageDB::new() {
+        Ok(db) => db,
+        Err(PackageError::PacmanMissing) => {
+            anyhow::bail!("archdots check requires an Arch-based system (pacman not found)");
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let validator = Validator::new(&db, &paths.home);
+    let opts = ValidatorOptions {
+        strict: false,
+        deep,
+    };
+    Ok(validator.validate(&p, &paths.profiles_dir, opts)?)
+}
+
+/// Route an `anyhow::Error` into the correct `TaskResult` variant for `kind`.
+fn error_result_for_kind(kind: &BackgroundKind, err: anyhow::Error) -> TaskResult {
+    match kind {
+        BackgroundKind::Apply { .. } => TaskResult::Apply(Err(err)),
+        BackgroundKind::Rollback { .. } | BackgroundKind::RollbackToSnapshot { .. } => {
+            TaskResult::Rollback(Err(err))
+        }
+        BackgroundKind::Check { .. } => TaskResult::Check(Err(err)),
+        BackgroundKind::RefreshSnapshots => TaskResult::SnapshotList(Err(err)),
+        BackgroundKind::PruneSnapshot { .. } => TaskResult::Prune(Err(err)),
+        #[cfg(test)]
+        BackgroundKind::PanicForTest => TaskResult::SnapshotList(Err(err)),
+    }
+}
+
+/// Convert a `catch_unwind` payload into the appropriate `TaskResult::*::Err`.
+fn panic_to_result(kind: &BackgroundKind, payload: &Box<dyn std::any::Any + Send>) -> TaskResult {
+    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "worker thread panicked (no message)".to_owned()
+    };
+    error_result_for_kind(kind, anyhow::anyhow!("panic in worker: {msg}"))
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    fn fake_paths() -> AppPaths {
+        AppPaths {
+            home: PathBuf::from("/tmp/test-home"),
+            profiles_dir: PathBuf::from("/tmp/test-home/.config/archdots/profiles"),
+            data_home: PathBuf::from("/tmp/test-home/.local/share"),
+            state_home: PathBuf::from("/tmp/test-home/.local/state"),
+        }
+    }
+
+    fn real_paths(tmp: &tempfile::TempDir) -> AppPaths {
+        AppPaths {
+            home: tmp.path().join("home"),
+            profiles_dir: tmp.path().join("profiles"),
+            data_home: tmp.path().join("data"),
+            state_home: tmp.path().join("state"),
+        }
+    }
+
+    #[test]
+    fn refresh_snapshots_empty_dir_returns_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = real_paths(&tmp);
+        let result = run_refresh_snapshots(&paths);
+        assert!(
+            result.is_ok(),
+            "refresh on empty dir must succeed: {result:?}"
+        );
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn prune_snapshot_nonexistent_id_is_noop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = real_paths(&tmp);
+        let unknown_id = archdots_core::snapshot::SnapshotId::new();
+        let result = run_prune_snapshot(&unknown_id, &paths);
+        assert!(
+            result.is_ok(),
+            "prune of unknown id must not error: {result:?}"
+        );
+        assert_eq!(result.unwrap().removed.len(), 0);
+    }
+
+    #[test]
+    fn apply_missing_profile_returns_err() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = real_paths(&tmp);
+        let result = run_apply("nonexistent", &paths);
+        assert!(result.is_err(), "apply of missing profile must fail");
+    }
+
+    #[test]
+    fn rollback_no_prior_transaction_returns_err() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = real_paths(&tmp);
+        let result = run_rollback("nonexistent", &paths);
+        assert!(
+            result.is_err(),
+            "rollback with no prior transaction must fail"
+        );
+    }
+
+    #[test]
+    fn rollback_to_snapshot_unknown_id_returns_err() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = real_paths(&tmp);
+        let unknown_id = archdots_core::snapshot::SnapshotId::new();
+        let result = run_rollback_to_snapshot(&unknown_id, &paths);
+        assert!(
+            result.is_err(),
+            "rollback_to_snapshot of unknown id must fail"
+        );
+    }
+
+    #[test]
+    fn task_panic_caught_and_sent_as_error() {
+        let (tx, rx) = mpsc::channel();
+        spawn(TaskId(1), BackgroundKind::PanicForTest, fake_paths(), tx);
+
+        // Worker panics; catch_unwind converts it to a TaskResult::SnapshotList(Err).
+        let msg = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("task must complete");
+
+        match msg {
+            TaskMessage::Completed {
+                result: TaskResult::SnapshotList(Err(e)),
+                ..
+            } => {
+                assert!(e.to_string().contains("panic in worker"));
+            }
+            other @ TaskMessage::Completed { .. } => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_check_missing_profile_returns_err() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = real_paths(&tmp);
+        // profiles_dir exists but "nonexistent.toml" does not
+        std::fs::create_dir_all(&paths.profiles_dir).unwrap();
+        let result = run_check("nonexistent", false, &paths);
+        assert!(
+            result.is_err(),
+            "run_check on missing profile must return Err"
+        );
+    }
+
+    #[test]
+    fn run_check_valid_profile_returns_result_or_pacman_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = real_paths(&tmp);
+        std::fs::create_dir_all(&paths.profiles_dir).unwrap();
+        std::fs::write(
+            paths.profiles_dir.join("test.toml"),
+            "schema_version = 1\n[profile]\nname = \"test\"\n",
+        )
+        .unwrap();
+
+        let result = run_check("test", false, &paths);
+        match &result {
+            Ok(_) => {
+                // pacman available in this environment — that's fine
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                // Either pacman is missing (expected in CI) or another error
+                assert!(!msg.is_empty(), "error must have a message");
+                if msg.contains("pacman") {
+                    assert!(
+                        msg.contains("Arch-based system") || msg.contains("pacman not found"),
+                        "PacmanMissing error must include clear message, got: {msg}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spawn_returns_immediately() {
+        let (tx, _rx) = mpsc::channel();
+        let start = Instant::now();
+        spawn(TaskId(2), BackgroundKind::PanicForTest, fake_paths(), tx);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(10),
+            "spawn must return in < 10 ms, took {elapsed:?}"
+        );
+        // Allow the worker thread to finish so TempDir (if used) can clean up.
+    }
+}

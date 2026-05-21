@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["njuante <juan.nunez1@alu.uclm.es>"]
@@ -44,6 +44,9 @@ similar = "2"
 owo-colors = "4"
 humantime = "2"
 byte-unit = "5"
+fuzzy-matcher = "0.3"
+arboard = "3"
+tracing-appender = "0.2"
 
 [profile.release]
 lto = "thin"

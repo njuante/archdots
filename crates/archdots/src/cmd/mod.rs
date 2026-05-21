@@ -7,6 +7,7 @@ pub mod profile;
 pub mod recover;
 pub mod rollback;
 pub mod snapshots;
+pub mod tui;
 
 /// Prompt the user for confirmation on a real TTY.
 ///
