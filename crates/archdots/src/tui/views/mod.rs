@@ -1,11 +1,12 @@
 #![allow(dead_code)] // Trait methods and ViewCtx fields used in later sessions.
 
 pub mod deps;
-pub mod placeholder;
+pub mod diff;
 pub mod profiles;
 pub mod snapshots;
 
 pub use deps::DepsView;
+pub use diff::{DiffItemKind, DiffView};
 pub use profiles::ProfilesView;
 pub use snapshots::SnapshotsView;
 
