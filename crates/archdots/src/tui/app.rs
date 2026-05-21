@@ -1,15 +1,16 @@
 //! `App` — top-level TUI state machine.
 
 #![allow(clippy::module_name_repetitions)]
-#![allow(dead_code)] // Fields used in later sessions.
 
 use std::{path::PathBuf, sync::mpsc, time::Instant};
+
+use time::OffsetDateTime;
 
 use ratatui::{
     layout::Alignment,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Tabs},
+    widgets::{block::Title, Block, Borders, Paragraph, Tabs},
     Frame,
 };
 
@@ -40,10 +41,50 @@ pub struct AppPaths {
 pub enum BackgroundState {
     Idle,
     Running {
+        // Reserved for stale-completion detection: compare with Completed.id before
+        // transitioning to Idle to guard against a force-quit/restart race.
+        #[allow(dead_code)]
         id: TaskId,
         kind: BackgroundKind,
         started: Instant,
     },
+}
+
+// ─── Journal helpers ──────────────────────────────────────────────────────────
+
+/// Read the most recent successful apply entry from the journal.
+///
+/// Silently returns `None` on any error so a missing or corrupt journal never
+/// prevents the TUI from starting.
+fn read_last_apply(paths: &AppPaths) -> Option<(String, OffsetDateTime)> {
+    use archdots_core::journal::{Journal, JournalAction, JournalStatus};
+    let journal = Journal::open(&paths.state_home).ok()?;
+    let mut latest: Option<(String, OffsetDateTime)> = None;
+    for result in journal.iter().ok()? {
+        let Ok(entry) = result else { continue };
+        if entry.action == JournalAction::Apply
+            && entry.status == JournalStatus::Success
+            && latest.as_ref().is_none_or(|(_, ts)| entry.ts > *ts)
+        {
+            latest = Some((entry.profile.clone(), entry.ts));
+        }
+    }
+    latest
+}
+
+/// Format an `OffsetDateTime` as a human-readable relative time string.
+fn format_relative_time(ts: OffsetDateTime) -> String {
+    let now = OffsetDateTime::now_utc();
+    let secs = (now - ts).whole_seconds().max(0).unsigned_abs();
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -70,6 +111,7 @@ pub struct App {
     rx: mpsc::Receiver<TaskMessage>,
     should_quit: bool,
     dirty: bool,
+    last_apply: Option<(String, OffsetDateTime)>,
 }
 
 impl App {
@@ -85,6 +127,7 @@ impl App {
     #[allow(clippy::unnecessary_wraps)]
     pub fn new(paths: AppPaths, theme: Theme) -> anyhow::Result<Self> {
         let (tx, rx) = mpsc::channel::<TaskMessage>();
+        let last_apply = read_last_apply(&paths);
         Ok(Self {
             profiles: ProfilesView::new(&paths),
             snapshots: SnapshotsView::new(&paths),
@@ -101,6 +144,7 @@ impl App {
             rx,
             should_quit: false,
             dirty: true,
+            last_apply,
         })
     }
 
@@ -171,6 +215,19 @@ impl App {
     /// Draw the full TUI frame.
     pub fn render(&self, frame: &mut Frame<'_>) {
         let area = frame.area();
+
+        if area.width < 40 || area.height < 10 {
+            let msg = format!(
+                "Terminal too small ({}×{}). Minimum: 40×10.",
+                area.width, area.height
+            );
+            frame.render_widget(
+                Paragraph::new(msg).style(Style::default().fg(self.theme.err)),
+                area,
+            );
+            return;
+        }
+
         let [top_bar, body, status] = layout::main_chunks(area);
 
         self.render_top_bar(frame, top_bar);
@@ -224,24 +281,24 @@ impl App {
                 }
             }
             // Help overlay
-            (KeyCode::Char('?'), _) => Action::OpenModal(Modal::ScrollableInfo {
-                title: "Help".into(),
-                body: format!(
-                    "archdots TUI — keyboard shortcuts\n\
-                     \n\
-                     Global\n\
-                     ------\n\
-                     q / Ctrl+C  quit\n\
-                     ?           this help\n\
-                     1-4         switch tabs\n\
-                     Tab         next tab\n\
-                     \n\
-                     Log: $XDG_STATE_HOME/archdots/tui.log\n\
-                     Profiles dir: {}",
-                    self.paths.profiles_dir.display()
-                ),
-                scroll: 0,
-            }),
+            (KeyCode::Char('?'), _) => {
+                let hints: Vec<_> = match self.active {
+                    ViewKind::Profiles => self.profiles.footer_hints(),
+                    ViewKind::Snapshots => self.snapshots.footer_hints(),
+                    ViewKind::Deps => self.deps.footer_hints(),
+                    ViewKind::Diff => self.diff.footer_hints(),
+                };
+                let body = crate::tui::views::help::build_help_body(
+                    self.active,
+                    &hints,
+                    &self.paths.profiles_dir,
+                );
+                Action::OpenModal(Modal::ScrollableInfo {
+                    title: "Help".into(),
+                    body,
+                    scroll: 0,
+                })
+            }
             // Tab switching by number
             (KeyCode::Char('1'), _) => Action::SwitchView(ViewKind::Profiles),
             (KeyCode::Char('2'), _) => Action::SwitchView(ViewKind::Snapshots),
@@ -258,7 +315,6 @@ impl App {
                 let busy = self.is_animating();
                 let ctx = ViewCtx {
                     paths: &self.paths,
-                    theme: &self.theme,
                     busy,
                 };
                 let ev = crossterm::event::Event::Key(key);
@@ -277,6 +333,17 @@ impl App {
             Action::None => {}
             Action::SwitchView(kind) => {
                 self.active = kind;
+                let busy = self.is_animating();
+                let ctx = ViewCtx {
+                    paths: &self.paths,
+                    busy,
+                };
+                match kind {
+                    ViewKind::Profiles => self.profiles.on_focus(&ctx),
+                    ViewKind::Snapshots => self.snapshots.on_focus(&ctx),
+                    ViewKind::Deps => self.deps.on_focus(&ctx),
+                    ViewKind::Diff => self.diff.on_focus(&ctx),
+                }
                 self.dirty = true;
             }
             Action::SelectProfileForDeps(name) => {
@@ -489,6 +556,11 @@ impl App {
             .map(|v| Line::from(Span::raw(format!("[{}]{}", v.key(), v.name()))))
             .collect();
 
+        let last_apply_label = match &self.last_apply {
+            Some((name, ts)) => format!(" last applied: {name} ({}) ", format_relative_time(*ts)),
+            None => " no apply history ".to_string(),
+        };
+
         let tabs = Tabs::new(titles)
             .block(
                 Block::default()
@@ -497,6 +569,13 @@ impl App {
                         " archdots 0.4.0 ",
                         Style::default().add_modifier(Modifier::BOLD),
                     ))
+                    .title(
+                        Title::from(Span::styled(
+                            last_apply_label,
+                            Style::default().fg(self.theme.muted),
+                        ))
+                        .alignment(Alignment::Right),
+                    )
                     .title_alignment(Alignment::Left),
             )
             .select(selected)
@@ -570,12 +649,6 @@ impl App {
         self.deps.error.as_deref()
     }
 
-    /// Expose deps loading flag for assertions.
-    #[cfg(test)]
-    pub fn deps_loading(&self) -> bool {
-        self.deps.loading
-    }
-
     /// Expose diff profile name for assertions.
     #[cfg(test)]
     pub fn diff_profile(&self) -> Option<&str> {
@@ -584,14 +657,14 @@ impl App {
 
     /// Expose diff item kind at a given index for assertions.
     #[cfg(test)]
-    pub fn diff_item_kind(&self, idx: usize) -> Option<crate::tui::views::DiffItemKind> {
+    pub fn diff_item_kind(&self, idx: usize) -> Option<crate::tui::views::diff::DiffItemKind> {
         self.diff.item_kind(idx)
     }
 
-    /// Expose diff error for assertions.
+    /// Expose last-apply profile name for assertions.
     #[cfg(test)]
-    pub fn diff_error(&self) -> Option<&str> {
-        self.diff.error.as_deref()
+    pub fn last_apply_profile(&self) -> Option<&str> {
+        self.last_apply.as_ref().map(|(name, _)| name.as_str())
     }
 }
 
@@ -1038,7 +1111,7 @@ mod tests {
 
     #[test]
     fn app_apply_ok_when_active_diff_same_profile_refreshes_diff() {
-        use crate::tui::views::DiffItemKind;
+        use crate::tui::views::diff::DiffItemKind;
         use std::os::unix::fs::symlink;
         use tempfile::TempDir;
 
@@ -1170,6 +1243,112 @@ mod tests {
             has_status || has_modal,
             "CopyToClipboard must either set status or open modal"
         );
+    }
+
+    // ── Last-apply ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn app_last_apply_none_without_journal() {
+        // fake_paths points to /tmp/test-home which has no journal on disk.
+        let app = make_app();
+        assert!(app.last_apply_profile().is_none());
+    }
+
+    #[test]
+    fn app_last_apply_reads_most_recent_from_journal() {
+        use archdots_core::journal::{
+            Journal, JournalAction, JournalEntry, JournalId, JournalStatus,
+        };
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let paths = AppPaths {
+            home: tmp.path().join("home"),
+            profiles_dir: tmp.path().join("profiles"),
+            data_home: tmp.path().join("data"),
+            state_home: tmp.path().join("state"),
+        };
+        std::fs::create_dir_all(&paths.state_home).unwrap();
+
+        let journal = Journal::open(&paths.state_home).unwrap();
+        let entry = JournalEntry {
+            schema_version: 1,
+            id: JournalId::new(),
+            ts: OffsetDateTime::now_utc(),
+            profile: "my-rice".to_string(),
+            action: JournalAction::Apply,
+            snapshot_id: None,
+            links: vec![],
+            status: JournalStatus::Success,
+            error: None,
+            supersedes: None,
+        };
+        journal.append(&entry).unwrap();
+
+        let app = App::new(paths, Theme::detect()).unwrap();
+        assert_eq!(app.last_apply_profile(), Some("my-rice"));
+    }
+
+    #[test]
+    fn app_last_apply_ignores_non_success_entries() {
+        use archdots_core::journal::{
+            Journal, JournalAction, JournalEntry, JournalId, JournalStatus,
+        };
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let paths = AppPaths {
+            home: tmp.path().join("home"),
+            profiles_dir: tmp.path().join("profiles"),
+            data_home: tmp.path().join("data"),
+            state_home: tmp.path().join("state"),
+        };
+        std::fs::create_dir_all(&paths.state_home).unwrap();
+
+        let journal = Journal::open(&paths.state_home).unwrap();
+        let entry = JournalEntry {
+            schema_version: 1,
+            id: JournalId::new(),
+            ts: OffsetDateTime::now_utc(),
+            profile: "rice".to_string(),
+            action: JournalAction::Apply,
+            snapshot_id: None,
+            links: vec![],
+            status: JournalStatus::Failed,
+            error: Some("disk full".to_string()),
+            supersedes: None,
+        };
+        journal.append(&entry).unwrap();
+
+        let app = App::new(paths, Theme::detect()).unwrap();
+        assert!(
+            app.last_apply_profile().is_none(),
+            "failed entries must be ignored"
+        );
+    }
+
+    // ── format_relative_time ─────────────────────────────────────────────────
+
+    #[test]
+    fn format_relative_time_just_now() {
+        let ts = OffsetDateTime::now_utc();
+        assert_eq!(format_relative_time(ts), "just now");
+    }
+
+    #[test]
+    fn format_relative_time_minutes_ago() {
+        let ts = OffsetDateTime::now_utc() - time::Duration::minutes(5);
+        assert_eq!(format_relative_time(ts), "5m ago");
+    }
+
+    #[test]
+    fn format_relative_time_hours_ago() {
+        let ts = OffsetDateTime::now_utc() - time::Duration::hours(3);
+        assert_eq!(format_relative_time(ts), "3h ago");
+    }
+
+    #[test]
+    fn format_relative_time_days_ago() {
+        let ts = OffsetDateTime::now_utc() - time::Duration::days(2);
+        assert_eq!(format_relative_time(ts), "2d ago");
     }
 
     // Requires a real TTY; skip in CI / non-TTY test runners where
