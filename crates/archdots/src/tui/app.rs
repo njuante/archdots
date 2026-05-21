@@ -19,7 +19,7 @@ use crate::tui::{
     tasks::{BackgroundKind, TaskId, TaskMessage, TaskResult},
     theme::Theme,
     ui::{self, layout, Modal, ModalOutcome, StatusMessage},
-    views::{placeholder::PlaceholderView, View, ViewCtx, ViewKind},
+    views::{placeholder::PlaceholderView, ProfilesView, SnapshotsView, View, ViewCtx, ViewKind},
 };
 
 // ─── AppPaths ─────────────────────────────────────────────────────────────────
@@ -50,11 +50,11 @@ pub enum BackgroundState {
 
 /// Top-level TUI state: views, modal, background task, channel.
 pub struct App {
-    // ── Per-view state (all placeholders for now) ──
-    profiles: PlaceholderView,
-    snapshots: PlaceholderView,
-    deps: PlaceholderView,
-    diff: PlaceholderView,
+    // ── Per-view state ──
+    profiles: ProfilesView,
+    snapshots: SnapshotsView,
+    deps: PlaceholderView, // Session 4
+    diff: PlaceholderView, // Session 5
 
     // ── Navigation ──
     active: ViewKind,
@@ -86,8 +86,8 @@ impl App {
     pub fn new(paths: AppPaths, theme: Theme) -> anyhow::Result<Self> {
         let (tx, rx) = mpsc::channel::<TaskMessage>();
         Ok(Self {
-            profiles: PlaceholderView::new(ViewKind::Profiles, 3),
-            snapshots: PlaceholderView::new(ViewKind::Snapshots, 3),
+            profiles: ProfilesView::new(&paths),
+            snapshots: SnapshotsView::new(&paths),
             deps: PlaceholderView::new(ViewKind::Deps, 4),
             diff: PlaceholderView::new(ViewKind::Diff, 5),
             active: ViewKind::Profiles,
@@ -116,7 +116,7 @@ impl App {
     pub fn drain_task_messages(&mut self) -> anyhow::Result<()> {
         while let Ok(TaskMessage::Completed { result, .. }) = self.rx.try_recv() {
             self.background = BackgroundState::Idle;
-            self.handle_task_result(result);
+            self.handle_task_result(&result);
         }
         Ok(())
     }
@@ -280,14 +280,16 @@ impl App {
                 self.dirty = true;
             }
             Action::SelectProfileForDeps(name) => {
-                // TODO Session 4: deps.set_profile(name)
-                let _ = name;
+                // Session 4: deps.set_profile(name) — placeholder for now.
+                self.status_msg =
+                    StatusMessage::Info(format!("DepsView for '{name}' — coming in Session 4"));
                 self.active = ViewKind::Deps;
                 self.dirty = true;
             }
             Action::SelectProfileForDiff(name) => {
-                // TODO Session 5: diff.set_profile(name, &self.paths)
-                let _ = name;
+                // Session 5: diff.set_profile(name, &paths) — placeholder for now.
+                self.status_msg =
+                    StatusMessage::Info(format!("DiffView for '{name}' — coming in Session 5"));
                 self.active = ViewKind::Diff;
                 self.dirty = true;
             }
@@ -356,7 +358,9 @@ impl App {
                         "Failed to delete profile '{name}': {e}"
                     )));
                 }
-                Action::SetStatus(StatusMessage::Success(format!("Profile '{name}' deleted")))
+                let paths = self.paths.clone();
+                self.profiles.refresh(&paths);
+                Action::SetStatus(StatusMessage::Success(format!("Profile deleted: {name}")))
             }
             ConfirmKind::PruneSnapshot(id) => {
                 Action::SpawnTask(BackgroundKind::PruneSnapshot { id })
@@ -365,9 +369,9 @@ impl App {
         }
     }
 
-    fn handle_task_result(&mut self, result: TaskResult) {
+    fn handle_task_result(&mut self, result: &TaskResult) {
         match result {
-            TaskResult::Apply(Ok(rep)) => {
+            TaskResult::Apply(Ok(ref rep)) => {
                 if rep.rolled_back {
                     self.modal = Some(Modal::Error {
                         title: "Apply failed — rolled back".into(),
@@ -380,36 +384,55 @@ impl App {
                     self.status_msg =
                         StatusMessage::Success(format!("Applied {} link(s)", rep.applied.len()));
                 }
+                let paths = self.paths.clone();
+                self.snapshots.refresh(&paths);
+                self.profiles.refresh(&paths);
             }
-            TaskResult::Apply(Err(e))
-            | TaskResult::Rollback(Err(e))
-            | TaskResult::SnapshotList(Err(e)) => {
+            TaskResult::Apply(Err(ref e)) => {
                 self.modal = Some(Modal::Error {
-                    title: "Error".into(),
+                    title: "Apply failed".into(),
                     body: e.to_string(),
                 });
             }
-            TaskResult::Rollback(Ok(rep)) => {
+            TaskResult::Rollback(Ok(ref rep)) => {
                 self.status_msg =
                     StatusMessage::Success(format!("Rolled back {} entry(s)", rep.applied.len()));
+                let paths = self.paths.clone();
+                self.snapshots.refresh(&paths);
             }
-            TaskResult::Check(Ok(_)) => {
-                self.status_msg = StatusMessage::Success("Check complete".into());
-            }
-            TaskResult::Check(Err(e)) => {
+            TaskResult::Rollback(Err(ref e)) => {
                 self.modal = Some(Modal::Error {
-                    title: "Check failed".into(),
+                    title: "Rollback failed".into(),
                     body: e.to_string(),
                 });
             }
             TaskResult::SnapshotList(Ok(_)) => {
                 self.status_msg = StatusMessage::Info("Snapshots refreshed".into());
+                let paths = self.paths.clone();
+                self.snapshots.refresh(&paths);
             }
-            TaskResult::Prune(Ok(rep)) => {
+            TaskResult::SnapshotList(Err(ref e)) => {
+                self.modal = Some(Modal::Error {
+                    title: "Error".into(),
+                    body: e.to_string(),
+                });
+            }
+            TaskResult::Check(Ok(_)) => {
+                self.status_msg = StatusMessage::Success("Check complete".into());
+            }
+            TaskResult::Check(Err(ref e)) => {
+                self.modal = Some(Modal::Error {
+                    title: "Check failed".into(),
+                    body: e.to_string(),
+                });
+            }
+            TaskResult::Prune(Ok(ref rep)) => {
                 self.status_msg =
                     StatusMessage::Success(format!("Pruned {} snapshot(s)", rep.removed.len()));
+                let paths = self.paths.clone();
+                self.snapshots.refresh(&paths);
             }
-            TaskResult::Prune(Err(e)) => {
+            TaskResult::Prune(Err(ref e)) => {
                 self.modal = Some(Modal::Error {
                     title: "Prune failed".into(),
                     body: e.to_string(),
@@ -675,6 +698,124 @@ mod tests {
             ),
             "must open QuitWithRunningTask confirm modal"
         );
+    }
+
+    // ── Integration: real views constructed ───────────────────────────────────
+
+    #[test]
+    fn app_new_with_real_views_constructs_ok() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let paths = AppPaths {
+            home: tmp.path().join("home"),
+            profiles_dir: tmp.path().join("profiles"),
+            data_home: tmp.path().join("data"),
+            state_home: tmp.path().join("state"),
+        };
+        let app = App::new(paths, Theme::detect());
+        assert!(app.is_ok(), "App::new must succeed with real views");
+    }
+
+    #[test]
+    fn app_select_profile_for_deps_switches_view() {
+        let mut app = make_app();
+        app.dispatch(Action::SelectProfileForDeps("laptop".into()));
+        assert_eq!(app.active(), ViewKind::Deps);
+    }
+
+    #[test]
+    fn app_select_profile_for_diff_switches_view() {
+        let mut app = make_app();
+        app.dispatch(Action::SelectProfileForDiff("laptop".into()));
+        assert_eq!(app.active(), ViewKind::Diff);
+    }
+
+    #[test]
+    fn app_delete_profile_removes_file() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        let profile_path = profiles_dir.join("test.toml");
+        std::fs::write(
+            &profile_path,
+            "schema_version = 1\n[profile]\nname = \"test\"\n",
+        )
+        .unwrap();
+        assert!(profile_path.exists());
+
+        let paths = AppPaths {
+            home: tmp.path().join("home"),
+            profiles_dir,
+            data_home: tmp.path().join("data"),
+            state_home: tmp.path().join("state"),
+        };
+        let mut app = App::new(paths, Theme::detect()).unwrap();
+        // execute_confirm is called internally; call dispatch directly
+        app.dispatch(Action::OpenModal(Modal::Confirm {
+            prompt: "Delete?".into(),
+            details: None,
+            kind: ConfirmKind::DeleteProfile("test".into()),
+        }));
+        // Now simulate pressing Enter on the confirm modal
+        app.step(key_event(crossterm::event::KeyCode::Enter))
+            .unwrap();
+
+        assert!(
+            !profile_path.exists(),
+            "profile file must be removed after DeleteProfile confirm"
+        );
+        assert!(matches!(app.status_msg(), StatusMessage::Success(_)));
+    }
+
+    #[test]
+    fn app_apply_ok_refreshes_profiles_and_snapshots() {
+        let mut app = make_app();
+        app.force_running();
+
+        let tx = app.test_sender();
+        let apply_report = archdots_core::linker::ApplyReport {
+            journal_id: archdots_core::journal::JournalId::new(),
+            snapshot_id: None,
+            applied: vec![],
+            rolled_back: false,
+        };
+        tx.send(TaskMessage::Completed {
+            id: TaskId(0),
+            kind: BackgroundKind::Apply {
+                profile: "laptop".into(),
+            },
+            result: TaskResult::Apply(Ok(apply_report)),
+        })
+        .unwrap();
+
+        app.drain_task_messages().unwrap();
+        assert!(app.is_idle());
+        assert!(matches!(app.status_msg(), StatusMessage::Success(_)));
+    }
+
+    #[test]
+    fn app_prune_ok_updates_status() {
+        let mut app = make_app();
+        app.force_running();
+
+        let tx = app.test_sender();
+        let prune_report = archdots_core::snapshot::PruneReport {
+            removed: vec![archdots_core::snapshot::SnapshotId::new()],
+            freed_bytes: 1024,
+        };
+        tx.send(TaskMessage::Completed {
+            id: TaskId(0),
+            kind: BackgroundKind::PruneSnapshot {
+                id: archdots_core::snapshot::SnapshotId::new(),
+            },
+            result: TaskResult::Prune(Ok(prune_report)),
+        })
+        .unwrap();
+
+        app.drain_task_messages().unwrap();
+        assert!(app.is_idle());
+        assert!(matches!(app.status_msg(), StatusMessage::Success(_)));
     }
 
     // Requires a real TTY; skip in CI / non-TTY test runners where
