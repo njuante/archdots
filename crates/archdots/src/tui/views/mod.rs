@@ -1,6 +1,11 @@
 #![allow(dead_code)] // Trait methods and ViewCtx fields used in later sessions.
 
 pub mod placeholder;
+pub mod profiles;
+pub mod snapshots;
+
+pub use profiles::ProfilesView;
+pub use snapshots::SnapshotsView;
 
 use ratatui::{layout::Rect, Frame};
 

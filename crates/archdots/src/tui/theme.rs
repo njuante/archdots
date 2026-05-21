@@ -23,6 +23,12 @@ pub struct Theme {
     pub use_color: bool,
 }
 
+impl Default for Theme {
+    fn default() -> Self {
+        Self::detect()
+    }
+}
+
 impl Theme {
     /// Detect theme capabilities from the environment.
     ///
