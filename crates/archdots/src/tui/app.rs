@@ -471,6 +471,7 @@ impl App {
                 } else {
                     self.status_msg =
                         StatusMessage::Success(format!("Applied {} link(s)", rep.applied.len()));
+                    self.last_apply = read_last_apply(&self.paths);
                 }
                 let paths = self.paths.clone();
                 self.snapshots.refresh(&paths);
@@ -566,7 +567,7 @@ impl App {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(Span::styled(
-                        " archdots 0.4.0 ",
+                        concat!(" archdots ", env!("CARGO_PKG_VERSION"), " "),
                         Style::default().add_modifier(Modifier::BOLD),
                     ))
                     .title(
@@ -1322,6 +1323,88 @@ mod tests {
         assert!(
             app.last_apply_profile().is_none(),
             "failed entries must be ignored"
+        );
+    }
+
+    #[test]
+    fn app_apply_ok_refreshes_last_apply_badge() {
+        use archdots_core::journal::{
+            Journal, JournalAction, JournalEntry, JournalId, JournalStatus,
+        };
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let paths = AppPaths {
+            home: tmp.path().join("home"),
+            profiles_dir: tmp.path().join("profiles"),
+            data_home: tmp.path().join("data"),
+            state_home: tmp.path().join("state"),
+        };
+        std::fs::create_dir_all(&paths.state_home).unwrap();
+
+        let journal = Journal::open(&paths.state_home).unwrap();
+        // Old entry — present at App::new time.
+        let old_entry = JournalEntry {
+            schema_version: 1,
+            id: JournalId::new(),
+            ts: OffsetDateTime::now_utc() - time::Duration::hours(1),
+            profile: "old-rice".to_string(),
+            action: JournalAction::Apply,
+            snapshot_id: None,
+            links: vec![],
+            status: JournalStatus::Success,
+            error: None,
+            supersedes: None,
+        };
+        journal.append(&old_entry).unwrap();
+
+        let mut app = App::new(paths.clone(), Theme::detect()).unwrap();
+        assert_eq!(
+            app.last_apply_profile(),
+            Some("old-rice"),
+            "must read initial journal entry"
+        );
+
+        // Write a newer entry (simulates what the worker would have written).
+        let new_entry = JournalEntry {
+            schema_version: 1,
+            id: JournalId::new(),
+            ts: OffsetDateTime::now_utc(),
+            profile: "new-rice".to_string(),
+            action: JournalAction::Apply,
+            snapshot_id: None,
+            links: vec![],
+            status: JournalStatus::Success,
+            error: None,
+            supersedes: None,
+        };
+        journal.append(&new_entry).unwrap();
+
+        // Deliver Apply(Ok) on the channel.
+        app.force_running();
+        let tx = app.test_sender();
+        let report = archdots_core::linker::ApplyReport {
+            journal_id: archdots_core::journal::JournalId::new(),
+            snapshot_id: None,
+            applied: vec![],
+            rolled_back: false,
+        };
+        tx.send(TaskMessage::Completed {
+            id: TaskId(0),
+            kind: BackgroundKind::Apply {
+                profile: "new-rice".into(),
+            },
+            result: TaskResult::Apply(Ok(report)),
+        })
+        .unwrap();
+
+        app.drain_task_messages().unwrap();
+        assert!(app.is_idle());
+
+        // last_apply must now reflect the newer journal entry.
+        assert_eq!(
+            app.last_apply_profile(),
+            Some("new-rice"),
+            "last_apply must be refreshed after Apply(Ok)"
         );
     }
 

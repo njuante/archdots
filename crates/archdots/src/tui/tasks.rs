@@ -76,9 +76,15 @@ pub enum TaskMessage {
 /// Spawn `kind` on a fresh OS thread.
 ///
 /// Panics in the worker are caught via `catch_unwind`; the resulting error is
-/// sent as a `TaskResult` variant. The thread never borrows from `App`.
+/// sent as a `TaskResult` variant. If the thread fails to spawn (OOM), an
+/// error result is sent on `tx` instead of panicking. The thread never borrows
+/// from `App`.
 pub fn spawn(id: TaskId, kind: BackgroundKind, paths: AppPaths, tx: mpsc::Sender<TaskMessage>) {
-    std::thread::Builder::new()
+    // Clone what we need in case thread spawn fails and we must send an error.
+    let err_kind = kind.clone();
+    let err_tx = tx.clone();
+
+    if std::thread::Builder::new()
         .name(format!("archdots-task-{}", id.0))
         .spawn(move || {
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| execute(&kind, &paths)));
@@ -88,7 +94,16 @@ pub fn spawn(id: TaskId, kind: BackgroundKind, paths: AppPaths, tx: mpsc::Sender
             };
             let _ = tx.send(TaskMessage::Completed { id, kind, result });
         })
-        .expect("failed to spawn worker thread");
+        .is_err()
+    {
+        let err = anyhow::anyhow!("failed to spawn worker thread (out of memory?)");
+        let result = error_result_for_kind(&err_kind, err);
+        let _ = err_tx.send(TaskMessage::Completed {
+            id,
+            kind: err_kind,
+            result,
+        });
+    }
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
@@ -199,16 +214,8 @@ fn run_check(
     Ok(validator.validate(&p, &paths.profiles_dir, opts)?)
 }
 
-/// Convert a `catch_unwind` payload into the appropriate `TaskResult::*::Err`.
-fn panic_to_result(kind: &BackgroundKind, payload: &Box<dyn std::any::Any + Send>) -> TaskResult {
-    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_owned()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "worker thread panicked (no message)".to_owned()
-    };
-    let err = anyhow::anyhow!("panic in worker: {msg}");
+/// Route an `anyhow::Error` into the correct `TaskResult` variant for `kind`.
+fn error_result_for_kind(kind: &BackgroundKind, err: anyhow::Error) -> TaskResult {
     match kind {
         BackgroundKind::Apply { .. } => TaskResult::Apply(Err(err)),
         BackgroundKind::Rollback { .. } | BackgroundKind::RollbackToSnapshot { .. } => {
@@ -220,6 +227,18 @@ fn panic_to_result(kind: &BackgroundKind, payload: &Box<dyn std::any::Any + Send
         #[cfg(test)]
         BackgroundKind::PanicForTest => TaskResult::SnapshotList(Err(err)),
     }
+}
+
+/// Convert a `catch_unwind` payload into the appropriate `TaskResult::*::Err`.
+fn panic_to_result(kind: &BackgroundKind, payload: &Box<dyn std::any::Any + Send>) -> TaskResult {
+    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "worker thread panicked (no message)".to_owned()
+    };
+    error_result_for_kind(kind, anyhow::anyhow!("panic in worker: {msg}"))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
