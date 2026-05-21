@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Fields used in later sessions.
-
 use ratatui::style::Color;
 
 /// Terminal color and capability settings derived from the environment.
@@ -20,6 +18,8 @@ pub struct Theme {
     /// `false` when `LANG`/`LC_ALL` does not include UTF-8.
     pub use_unicode: bool,
     /// `false` when `NO_COLOR` is set or `TERM=dumb`.
+    #[allow(dead_code)]
+    // available for callers querying terminal capabilities; colors are pre-resolved in detect()
     pub use_color: bool,
 }
 

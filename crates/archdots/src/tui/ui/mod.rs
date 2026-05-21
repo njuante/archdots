@@ -1,7 +1,6 @@
 pub mod layout;
 pub mod modal;
 pub mod status_bar;
-pub mod widgets;
 
 pub use modal::{Modal, ModalOutcome};
 

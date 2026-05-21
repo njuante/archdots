@@ -19,9 +19,11 @@ struct TerminalGuard {
 
 impl TerminalGuard {
     fn new() -> anyhow::Result<Self> {
-        crossterm::terminal::enable_raw_mode()?;
+        crossterm::terminal::enable_raw_mode()
+            .map_err(|e| anyhow::anyhow!("cannot enter raw mode (is this a TTY?): {e}"))?;
         let mut stdout = std::io::stdout();
-        crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen,)?;
+        crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)
+            .map_err(|e| anyhow::anyhow!("cannot enter alternate screen: {e}"))?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
@@ -57,24 +59,32 @@ pub fn run() -> anyhow::Result<()> {
     let state_home = crate::xdg::state_home()?;
 
     // 2. Setup file-based logging (truncate on start so each session is fresh).
+    //    Failure to create the log file is non-fatal: we just skip logging.
     let log_dir = state_home.join("archdots");
-    std::fs::create_dir_all(&log_dir)?;
-    let log_path = log_dir.join("tui.log");
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&log_path)?;
-
-    let (non_blocking, _appender_guard) = tracing_appender::non_blocking(log_file);
-    tracing_subscriber::fmt()
-        .with_writer(non_blocking)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("ARCHDOTS_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .init();
+    let _appender_guard = if let Ok(()) = std::fs::create_dir_all(&log_dir) {
+        let log_path = log_dir.join("tui.log");
+        if let Ok(log_file) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&log_path)
+        {
+            let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
+            tracing_subscriber::fmt()
+                .with_writer(non_blocking)
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_env("ARCHDOTS_LOG")
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                )
+                .with_target(false)
+                .init();
+            Some(guard)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // 3. Build paths and theme.
     let paths = AppPaths {

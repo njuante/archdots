@@ -1,7 +1,5 @@
 //! TUI module: App, events, tasks, views, and the main event loop.
 
-#![allow(unused_imports)] // Public re-exports wired up in later sessions.
-
 pub mod action;
 pub mod app;
 pub mod events;
@@ -10,11 +8,9 @@ pub mod theme;
 pub mod ui;
 pub mod views;
 
-pub use action::{Action, ConfirmKind};
-pub use app::{App, AppPaths};
-pub use events::{Event, EventLoop};
-pub use tasks::{BackgroundKind, TaskId, TaskMessage, TaskResult};
+pub use app::App;
 
+use events::EventLoop;
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 

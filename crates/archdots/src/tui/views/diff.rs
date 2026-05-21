@@ -373,16 +373,6 @@ impl DiffView {
     }
 
     #[cfg(test)]
-    pub fn detail_is_external_symlink(&self) -> bool {
-        matches!(self.detail, DiffDetail::ExternalSymlink { .. })
-    }
-
-    #[cfg(test)]
-    pub fn detail_is_conflict_reason(&self) -> bool {
-        matches!(self.detail, DiffDetail::ConflictReason(_))
-    }
-
-    #[cfg(test)]
     pub fn detail_is_unreadable(&self) -> bool {
         matches!(self.detail, DiffDetail::Unreadable(_))
     }
@@ -711,7 +701,7 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
-    use crate::tui::{app::AppPaths, theme::Theme};
+    use crate::tui::app::AppPaths;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -767,17 +757,8 @@ mod tests {
         })
     }
 
-    static THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
-    fn test_theme() -> &'static Theme {
-        THEME.get_or_init(Theme::default)
-    }
-
     fn make_ctx(paths: &AppPaths, busy: bool) -> ViewCtx<'_> {
-        ViewCtx {
-            paths,
-            theme: test_theme(),
-            busy,
-        }
+        ViewCtx { paths, busy }
     }
 
     // ── 1. empty() ────────────────────────────────────────────────────────────

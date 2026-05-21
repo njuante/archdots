@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Variants wired up in later sessions.
-
 use archdots_core::snapshot::SnapshotId;
 
 use crate::tui::{
@@ -27,6 +25,7 @@ pub enum Action {
     /// Open a modal overlay.
     OpenModal(Modal),
     /// Close the current modal without confirming.
+    #[allow(dead_code)] // available for views that need to dismiss modals programmatically
     CloseModal,
     /// Request a clean exit.
     Quit,

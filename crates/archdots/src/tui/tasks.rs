@@ -1,5 +1,4 @@
 //! Background task spawning and result routing.
-#![allow(dead_code)] // Variants/fields wired up in later sessions.
 //!
 //! At most one task runs at a time. Workers own clones of the paths they need
 //! and never hold references into `App`. Panics are caught by `catch_unwind`
@@ -39,6 +38,8 @@ pub enum BackgroundKind {
     /// Validate dependencies for the named profile.
     Check { profile: String, deep: bool },
     /// Re-read all snapshot summaries.
+    #[allow(dead_code)]
+    // spawned in tests; production views refresh synchronously via SnapshotsView::refresh
     RefreshSnapshots,
     /// Delete a specific snapshot.
     PruneSnapshot { id: SnapshotId },
@@ -61,6 +62,9 @@ pub enum TaskResult {
 #[derive(Debug)]
 pub enum TaskMessage {
     Completed {
+        // Reserved for stale-completion detection: compare with BackgroundState::Running::id
+        // before transitioning to Idle to guard against a force-quit/restart race.
+        #[allow(dead_code)]
         id: TaskId,
         kind: BackgroundKind,
         result: TaskResult,

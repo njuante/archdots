@@ -309,11 +309,6 @@ impl ProfilesView {
     }
 
     #[cfg(test)]
-    pub fn search_query(&self) -> Option<&str> {
-        self.search.as_ref().map(|s| s.query.as_str())
-    }
-
-    #[cfg(test)]
     pub fn search_filtered(&self) -> Option<&[usize]> {
         self.search.as_ref().map(|s| s.filtered.as_slice())
     }
@@ -326,11 +321,6 @@ impl ProfilesView {
     #[cfg(test)]
     pub fn list_error(&self) -> Option<&str> {
         self.list_error.as_deref()
-    }
-
-    #[cfg(test)]
-    pub fn has_summary(&self, idx: usize) -> bool {
-        self.profiles.get(idx).is_some_and(|p| p.summary.is_some())
     }
 }
 
@@ -425,7 +415,10 @@ fn render_list_pane(view: &ProfilesView, frame: &mut Frame<'_>, area: Rect, them
     }
 
     if lines.is_empty() {
-        let msg = view.list_error.as_deref().unwrap_or("No profiles found");
+        let msg = view
+            .list_error
+            .as_deref()
+            .unwrap_or("No profiles found. Run 'archdots init' first.");
         lines.push(Line::from(Span::styled(
             msg.to_string(),
             Style::default().fg(theme.muted),
@@ -545,18 +538,8 @@ mod tests {
         }
     }
 
-    static THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
-
-    fn test_theme() -> &'static Theme {
-        THEME.get_or_init(Theme::default)
-    }
-
     fn make_ctx(paths: &AppPaths) -> ViewCtx<'_> {
-        ViewCtx {
-            paths,
-            theme: test_theme(),
-            busy: false,
-        }
+        ViewCtx { paths, busy: false }
     }
 
     fn key(code: KeyCode) -> crossterm::event::Event {
@@ -795,7 +778,6 @@ mod tests {
         let mut view = ProfilesView::new(&paths);
         let ctx = ViewCtx {
             paths: &paths,
-            theme: test_theme(),
             busy: true,
         };
         // Enter while busy must return SetStatus, not OpenModal

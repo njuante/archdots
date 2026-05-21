@@ -77,12 +77,6 @@ impl SnapshotsView {
         }
     }
 
-    pub fn selected_id(&self) -> Option<&SnapshotId> {
-        let visible = self.visible_indices();
-        let idx = *visible.get(self.cursor)?;
-        self.summaries.get(idx).map(|s| &s.id)
-    }
-
     fn load_detail(&mut self, paths: &AppPaths) {
         let visible = self.visible_indices();
         let Some(&idx) = visible.get(self.cursor) else {
@@ -529,7 +523,6 @@ fn fuzzy_filter_snapshots(summaries: &[SnapshotSummary], query: &str) -> Vec<usi
 mod tests {
     use super::*;
     use archdots_core::snapshot::{CreateRequest, SnapshotTrigger};
-    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn make_paths(tmp: &TempDir) -> AppPaths {
@@ -541,18 +534,8 @@ mod tests {
         }
     }
 
-    static THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
-
-    fn test_theme() -> &'static Theme {
-        THEME.get_or_init(Theme::default)
-    }
-
     fn make_ctx(paths: &AppPaths) -> ViewCtx<'_> {
-        ViewCtx {
-            paths,
-            theme: test_theme(),
-            busy: false,
-        }
+        ViewCtx { paths, busy: false }
     }
 
     fn key(code: KeyCode) -> crossterm::event::Event {
@@ -810,7 +793,6 @@ mod tests {
         let mut view = SnapshotsView::new(&paths);
         let busy_ctx = ViewCtx {
             paths: &paths,
-            theme: test_theme(),
             busy: true,
         };
         let action = view.handle_event(&key(KeyCode::Char('r')), &busy_ctx);

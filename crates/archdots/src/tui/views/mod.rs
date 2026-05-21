@@ -1,12 +1,11 @@
-#![allow(dead_code)] // Trait methods and ViewCtx fields used in later sessions.
-
 pub mod deps;
 pub mod diff;
+pub mod help;
 pub mod profiles;
 pub mod snapshots;
 
 pub use deps::DepsView;
-pub use diff::{DiffItemKind, DiffView};
+pub use diff::DiffView;
 pub use profiles::ProfilesView;
 pub use snapshots::SnapshotsView;
 
@@ -37,8 +36,6 @@ pub trait View {
 pub struct ViewCtx<'a> {
     /// Resolved XDG paths for the current user.
     pub paths: &'a AppPaths,
-    /// Active colour/unicode theme.
-    pub theme: &'a Theme,
     /// `true` while a background task is running; blocks mutating actions.
     pub busy: bool,
 }

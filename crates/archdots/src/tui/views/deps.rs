@@ -502,12 +502,6 @@ mod tests {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    static THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
-
-    fn test_theme() -> &'static Theme {
-        THEME.get_or_init(Theme::default)
-    }
-
     fn fake_paths() -> crate::tui::app::AppPaths {
         crate::tui::app::AppPaths {
             home: PathBuf::from("/tmp"),
@@ -521,11 +515,7 @@ mod tests {
         // We need a static reference; use a thread-local for the paths.
         // Since ViewCtx borrows AppPaths, we use a leaked box in tests.
         let paths = Box::leak(Box::new(fake_paths()));
-        crate::tui::views::ViewCtx {
-            paths,
-            theme: test_theme(),
-            busy,
-        }
+        crate::tui::views::ViewCtx { paths, busy }
     }
 
     fn key(code: KeyCode) -> crossterm::event::Event {
@@ -544,15 +534,6 @@ mod tests {
             kind,
             status,
             source: DepSource::DeclaredInProfile,
-        }
-    }
-
-    fn make_implicit_entry(name: &str, status: DepStatus) -> DepEntry {
-        DepEntry {
-            name: name.to_owned(),
-            kind: DepKind::ImplicitFromConfig,
-            status,
-            source: DepSource::InferredFromConfig { mentions: vec![] },
         }
     }
 
