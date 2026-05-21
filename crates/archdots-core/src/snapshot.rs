@@ -208,7 +208,7 @@ pub struct SnapshotSummary {
 }
 
 /// Policy for pruning snapshots.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum PrunePolicy {
     /// Keep only the `n` most recent snapshots (across all profiles).
@@ -217,6 +217,8 @@ pub enum PrunePolicy {
     OlderThan(Duration),
     /// Keep the `n` most recent snapshots **per profile**.
     KeepLastPerProfile(usize),
+    /// Remove exactly one snapshot by its id. No-op when the id is not found.
+    OnlyId(SnapshotId),
 }
 
 /// Report returned by a `prune` operation.
@@ -492,6 +494,13 @@ impl SnapshotManager {
 
         let ids_to_remove: Vec<SnapshotId> = match policy {
             PrunePolicy::KeepLast(n) => summaries.into_iter().skip(n).map(|s| s.id).collect(),
+            PrunePolicy::OnlyId(target_id) => {
+                if summaries.iter().any(|s| s.id == target_id) {
+                    vec![target_id]
+                } else {
+                    vec![]
+                }
+            }
             PrunePolicy::OlderThan(max_age) => {
                 let now = std::time::SystemTime::now();
                 summaries
@@ -1612,6 +1621,65 @@ mod tests {
         assert_eq!(got.manifest.id, snap.manifest.id);
         assert_eq!(got.manifest.profile, snap.manifest.profile);
         assert_eq!(got.manifest.payload_sha256, snap.manifest.payload_sha256);
+    }
+
+    // ── 21. prune OnlyId — removes exactly one ───────────────────────────────
+
+    #[test]
+    fn prune_only_id_removes_exactly_one() {
+        let (_tmp, mgr) = make_manager();
+        let s1 = mgr
+            .create(CreateRequest {
+                profile: "p",
+                trigger: SnapshotTrigger::Manual,
+                targets: &[],
+            })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        let s2 = mgr
+            .create(CreateRequest {
+                profile: "p",
+                trigger: SnapshotTrigger::Manual,
+                targets: &[],
+            })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        let s3 = mgr
+            .create(CreateRequest {
+                profile: "p",
+                trigger: SnapshotTrigger::Manual,
+                targets: &[],
+            })
+            .unwrap();
+
+        let report = mgr.prune(PrunePolicy::OnlyId(s2.id.clone())).unwrap();
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0], s2.id);
+
+        let remaining = mgr.list().unwrap();
+        assert_eq!(remaining.len(), 2);
+        let ids: Vec<_> = remaining.iter().map(|s| &s.id).collect();
+        assert!(ids.contains(&&s1.id));
+        assert!(ids.contains(&&s3.id));
+    }
+
+    // ── 22. prune OnlyId with unknown id → empty report, no error ─────────────
+
+    #[test]
+    fn prune_only_id_nonexistent_is_noop() {
+        let (_tmp, mgr) = make_manager();
+        mgr.create(CreateRequest {
+            profile: "p",
+            trigger: SnapshotTrigger::Manual,
+            targets: &[],
+        })
+        .unwrap();
+
+        let fake_id = SnapshotId::new();
+        let report = mgr.prune(PrunePolicy::OnlyId(fake_id)).unwrap();
+        assert!(report.removed.is_empty());
+        assert_eq!(report.freed_bytes, 0);
+        assert_eq!(mgr.list().unwrap().len(), 1, "original snapshot untouched");
     }
 
     // ── Two rapid snapshots → distinct ULIDs ──────────────────────────────────
