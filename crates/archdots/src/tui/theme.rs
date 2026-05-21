@@ -32,14 +32,24 @@ impl Default for Theme {
 impl Theme {
     /// Detect theme capabilities from the environment.
     ///
-    /// Respects `NO_COLOR`, `TERM=dumb`, and `LANG`/`LC_ALL` for Unicode.
+    /// Respects `NO_COLOR`, `TERM=dumb`, and `LC_ALL`/`LANG` for Unicode
+    /// (POSIX precedence: `LC_ALL` overrides `LANG`).
     #[must_use]
     pub fn detect() -> Self {
-        let use_color = std::env::var_os("NO_COLOR").is_none()
-            && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(true);
+        Self::detect_with(|name| std::env::var(name).ok())
+    }
 
-        let use_unicode = std::env::var("LANG")
-            .or_else(|_| std::env::var("LC_ALL"))
+    /// Like `detect` but resolves env vars via `get` instead of `std::env`.
+    ///
+    /// Tests pass a deterministic closure so multiple tests can run in
+    /// parallel without touching the real process environment.
+    pub(crate) fn detect_with<F: Fn(&str) -> Option<String>>(get: F) -> Self {
+        let use_color = get("NO_COLOR").is_none()
+            && get("TERM").map(|t| t != "dumb").unwrap_or(true);
+
+        // POSIX: LC_ALL overrides LANG.
+        let use_unicode = get("LC_ALL")
+            .or_else(|| get("LANG"))
             .map(|l| l.contains("UTF-8") || l.contains("utf8"))
             .unwrap_or(false);
 
@@ -75,50 +85,40 @@ mod tests {
 
     #[test]
     fn no_color_disables_color() {
-        std::env::set_var("NO_COLOR", "1");
-        let theme = Theme::detect();
-        std::env::remove_var("NO_COLOR");
+        let theme = Theme::detect_with(|name| match name {
+            "NO_COLOR" => Some("1".into()),
+            _ => None,
+        });
         assert!(!theme.use_color);
         assert!(matches!(theme.accent, Color::Reset));
     }
 
     #[test]
     fn lang_c_disables_unicode() {
-        std::env::remove_var("NO_COLOR");
-        let orig_lang = std::env::var("LANG").ok();
-        let orig_lc = std::env::var("LC_ALL").ok();
-        std::env::set_var("LANG", "C");
-        std::env::remove_var("LC_ALL");
-        let theme = Theme::detect();
-        // Restore
-        match orig_lang {
-            Some(v) => std::env::set_var("LANG", v),
-            None => std::env::remove_var("LANG"),
-        }
-        match orig_lc {
-            Some(v) => std::env::set_var("LC_ALL", v),
-            None => std::env::remove_var("LC_ALL"),
-        }
+        let theme = Theme::detect_with(|name| match name {
+            "LANG" => Some("C".into()),
+            _ => None,
+        });
         assert!(!theme.use_unicode);
     }
 
     #[test]
     fn lang_utf8_enables_unicode() {
-        std::env::remove_var("NO_COLOR");
-        let orig_lang = std::env::var("LANG").ok();
-        let orig_lc = std::env::var("LC_ALL").ok();
-        std::env::set_var("LANG", "en_US.UTF-8");
-        std::env::remove_var("LC_ALL");
-        let theme = Theme::detect();
-        // Restore
-        match orig_lang {
-            Some(v) => std::env::set_var("LANG", v),
-            None => std::env::remove_var("LANG"),
-        }
-        match orig_lc {
-            Some(v) => std::env::set_var("LC_ALL", v),
-            None => std::env::remove_var("LC_ALL"),
-        }
+        let theme = Theme::detect_with(|name| match name {
+            "LANG" => Some("en_US.UTF-8".into()),
+            _ => None,
+        });
         assert!(theme.use_unicode);
+    }
+
+    #[test]
+    fn lc_all_takes_priority_over_lang() {
+        // LC_ALL=en_US.UTF-8 wins even when LANG=C
+        let theme = Theme::detect_with(|name| match name {
+            "LC_ALL" => Some("en_US.UTF-8".into()),
+            "LANG" => Some("C".into()),
+            _ => None,
+        });
+        assert!(theme.use_unicode, "LC_ALL must override LANG");
     }
 }
