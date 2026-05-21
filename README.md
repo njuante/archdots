@@ -116,7 +116,6 @@ The TUI provides four tab views. Log output is written to `$XDG_STATE_HOME/archd
 | `3` | Deps view |
 | `4` | Diff view |
 | `Tab` | Next tab |
-| `Shift+Tab` | Previous tab |
 | `?` | Toggle help overlay |
 | `q` / `Ctrl+C` | Quit |
 
@@ -126,9 +125,10 @@ The TUI provides four tab views. Log output is written to `$XDG_STATE_HOME/archd
 |-----|--------|
 | `j` / `k` | Move cursor down / up |
 | `Enter` | Apply selected profile |
-| `R` | Rollback selected profile |
-| `d` | Show deps for profile |
-| `D` | Show diff for profile |
+| `r` | Rollback selected profile |
+| `c` | Show deps for profile |
+| `d` | Show diff for profile |
+| `x` | Delete profile |
 | `/` | Fuzzy search |
 | `Esc` | Clear search |
 
@@ -146,17 +146,22 @@ The TUI provides four tab views. Log output is written to `$XDG_STATE_HOME/archd
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` | Move cursor down / up |
-| `Enter` | Run check for profile |
-| `c` | Copy report to clipboard |
+| `j` / `k` | Navigate within section |
+| `J` / `K` | Jump to next / previous section |
+| `g` / `G` | First / last entry |
+| `c` | Copy install command for selected missing dep |
+| `R` | Re-run check |
+| `D` | Toggle `--deep` and re-run |
 
 **Diff view**
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` | Move cursor down / up |
-| `Enter` | Load diff for profile |
-| `c` | Copy path to clipboard |
+| `j` / `k` | Move file cursor |
+| `J` / `K` | Scroll diff body down / up |
+| `g` / `G` | First / last file |
+| `a` | Apply this profile |
+| `q` | Back to Profiles view |
 
 **`archdots check <profile>`** — validate a profile's dependency declarations against the installed package database:
 
