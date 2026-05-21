@@ -5,6 +5,23 @@ All notable changes to archdots will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-05-22
+
+### Added
+
+- `archdots tui`: interactive terminal UI with four tab views (Profiles, Snapshots, Deps, Diff).
+- **Profiles view**: fuzzy search, lazy summary loading, apply/rollback/deps/diff actions.
+- **Snapshots view**: fuzzy search, lazy detail panel, restore and prune actions.
+- **Deps view**: per-profile dependency report with sectioned output (missing, implicit, optional).
+- **Diff view**: per-profile symlink plan preview with disposition glyphs and detail panel.
+- Help overlay (`?`) showing global and view-specific keybindings.
+- Last-apply indicator in top bar reading from the journal (e.g. "last applied: laptop (2d ago)").
+- `Linker::rollback_to_snapshot`: restore to a specific snapshot by id, bypassing the journal.
+- `Profile::list_names`: list all profile names from a directory without loading their contents.
+- `PrunePolicy::OnlyId`: prune a specific snapshot by id.
+- Single-column layout when terminal width < 60 columns; minimum-size guard at 40×10.
+- File-based TUI logging to `$XDG_STATE_HOME/archdots/tui.log` (degraded gracefully on error).
+
 ## [0.3.0] - 2026-05-20
 
 ### Added
