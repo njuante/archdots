@@ -99,6 +99,39 @@ target = "~/.env"
         );
         std::fs::write(dir.join(format!("{name}.toml")), content).unwrap();
     }
+
+    /// Write a profile whose single source file is clean but whose target
+    /// resolves under ~/.ssh/ — triggering the `ssh` prefix rule in
+    /// sensitive_paths.toml regardless of any secret-content flags.
+    fn write_ssh_profile(&self, name: &str) {
+        let dir = self.profiles_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let source_name = format!("{name}-sshconfig");
+        std::fs::write(
+            dir.join(&source_name),
+            "# ssh config — no secrets in content\nHost *\n  ServerAliveInterval 60\n",
+        )
+        .unwrap();
+
+        let content = format!(
+            r#"schema_version = 1
+
+[profile]
+name = "{name}"
+
+[dependencies]
+
+[hooks]
+
+[[files]]
+id = "sshconfig"
+source = "{source_name}"
+target = "~/.ssh/config"
+"#
+        );
+        std::fs::write(dir.join(format!("{name}.toml")), content).unwrap();
+    }
 }
 
 // ── 1. --help mentions all §E flags ──────────────────────────────────────────
@@ -370,5 +403,47 @@ fn export_happy_path_creates_output_files_and_no_tmp_dirs() {
         leftover_tmp.is_empty(),
         "no staging dirs should remain after export; found: {:?}",
         leftover_tmp.iter().map(|e| e.path()).collect::<Vec<_>>()
+    );
+}
+
+// ── 9. --include-secrets does NOT lift the sensitive-path filter (§A.5) ──────
+
+#[test]
+fn export_include_secrets_does_not_bypass_sensitive_path() {
+    let env = TestEnv::new();
+    env.write_ssh_profile("ssh-path");
+
+    let output_dir = env.home.path().join("ssh-path-export");
+
+    // --check is exempt from the non-TTY guard (no interactive gate in --check
+    // mode), so this runs fully on a piped stdin.  The source file is clean
+    // (no High findings), but the target ~/.ssh/config matches the `ssh`
+    // prefix rule in sensitive_paths.toml.  is_safe_to_write returns false for
+    // ExcludeSensitivePath regardless of --include-secrets, so exit code must
+    // be 2, not 0.
+    let output = env
+        .cmd()
+        .args([
+            "export",
+            "ssh-path",
+            "--check",
+            "--include-secrets",
+            "--output",
+            output_dir.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "--include-secrets must not bypass the sensitive-path filter; \
+         expected exit 2\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output_dir.exists(),
+        "--check must not create the output directory"
     );
 }

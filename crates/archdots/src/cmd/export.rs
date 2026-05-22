@@ -505,7 +505,9 @@ pub fn run(args: ExportArgs) -> Result<i32> {
     }
 
     // 2. Reject --include-secrets on non-TTY stdin (§A.5, §H #12).
-    if args.include_secrets && !std::io::stdin().is_terminal() {
+    // --check mode is exempt: the interactive "I UNDERSTAND" gate is skipped
+    // in --check, so a TTY is not required there.
+    if args.include_secrets && !args.check && !std::io::stdin().is_terminal() {
         eprintln!("refusing: --include-secrets requires a TTY");
         return Ok(3);
     }
