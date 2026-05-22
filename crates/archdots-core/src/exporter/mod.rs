@@ -51,6 +51,45 @@ pub struct ExportPlan {
     pub options: ExportOptions,
 }
 
+impl ExportPlan {
+    /// Count High-severity findings on `Include` items that are covered by
+    /// `--allow-secret` rules or `--include-secrets` in the embedded options.
+    #[must_use]
+    pub fn count_overridden_findings(&self, home: &Path) -> usize {
+        let opts = &self.options;
+        if !opts.include_secrets && opts.allow_secret_rules.is_empty() {
+            return 0;
+        }
+        let mut count = 0;
+        for item in &self.items {
+            if !matches!(item.classification, ItemClassification::Include {}) {
+                continue;
+            }
+            let target_rel = item
+                .target
+                .strip_prefix(home)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            for finding in &item.findings {
+                if finding.severity != SecretSeverity::High {
+                    continue;
+                }
+                let allowed_by_rule = opts.allow_secret_rules.iter().any(|a| {
+                    a.rule_id == finding.rule_id
+                        && match &a.path_glob {
+                            None => true,
+                            Some(g) => glob::glob_matches(g, &target_rel),
+                        }
+                });
+                if allowed_by_rule || opts.include_secrets {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+}
+
 /// Classification and metadata for one [`crate::profile::FileEntry`] in an
 /// [`ExportPlan`].
 #[derive(Debug, Clone, Serialize)]
@@ -640,7 +679,7 @@ impl<'a> Exporter<'a> {
         }
 
         // 4. Build report.
-        Ok(build_report(output_dir, plan))
+        Ok(build_report(output_dir, plan, self.home))
     }
 
     fn populate_staging(
@@ -979,8 +1018,7 @@ impl<'a> Exporter<'a> {
                     || source_hit.is_some()
                         && source_rel_str
                             .as_deref()
-                            .map(|s| glob::glob_matches(pat, s))
-                            .unwrap_or(false)
+                            .is_some_and(|s| glob::glob_matches(pat, s))
             });
             if !overridden {
                 return Ok(PlannedExportItem {
@@ -1246,7 +1284,7 @@ fn merge_dir_into(src: &Path, dst: &Path) -> Result<(), ExportError> {
     Ok(())
 }
 
-fn build_report(output_dir: &Path, plan: &ExportPlan) -> ExportReport {
+fn build_report(output_dir: &Path, plan: &ExportPlan, home: &Path) -> ExportReport {
     let mut report = ExportReport {
         output_dir: output_dir.to_path_buf(),
         items_included: 0,
@@ -1256,7 +1294,7 @@ fn build_report(output_dir: &Path, plan: &ExportPlan) -> ExportReport {
         items_missing: 0,
         findings_high: 0,
         findings_medium: 0,
-        findings_overridden: 0,
+        findings_overridden: plan.count_overridden_findings(home),
         bytes_written: 0,
     };
     for item in &plan.items {
@@ -2198,6 +2236,114 @@ mod tests {
         assert!(
             exp.is_safe_to_write(&plan, &ExportOptions::default()),
             "clean plan must be safe"
+        );
+    }
+
+    // ── count_overridden_findings tests (H-2) ────────────────────────────────
+
+    fn plan_with_opts_and_findings(
+        home: &Path,
+        opts: ExportOptions,
+        findings: Vec<SecretFinding>,
+    ) -> super::ExportPlan {
+        let item = PlannedExportItem {
+            entry_id: "f".to_string(),
+            source: home.join("f"),
+            source_canonical: Some(home.join("f")),
+            target: home.join(".config").join("f"),
+            rel_in_repo: Some(PathBuf::from("dotfiles/.config/f")),
+            classification: ItemClassification::Include {},
+            findings,
+            size_bytes: Some(10),
+            is_text: Some(true),
+        };
+        super::ExportPlan {
+            profile_name: "t".to_string(),
+            items: vec![item],
+            options: opts,
+        }
+    }
+
+    #[test]
+    fn count_overridden_no_override_is_zero() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let plan =
+            plan_with_opts_and_findings(home, ExportOptions::default(), vec![high_finding()]);
+        assert_eq!(
+            plan.count_overridden_findings(home),
+            0,
+            "without allow-secret or include-secrets, overridden must be 0"
+        );
+    }
+
+    #[test]
+    fn count_overridden_allow_secret_rule_counts_high() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let opts = ExportOptions {
+            allow_secret_rules: vec![SecretAllowance {
+                rule_id: "aws-access-key-id".to_string(),
+                path_glob: None,
+            }],
+            ..ExportOptions::default()
+        };
+        let plan = plan_with_opts_and_findings(home, opts, vec![high_finding()]);
+        assert_eq!(
+            plan.count_overridden_findings(home),
+            1,
+            "--allow-secret matching the finding must count as overridden"
+        );
+    }
+
+    #[test]
+    fn count_overridden_include_secrets_counts_high() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let opts = ExportOptions {
+            include_secrets: true,
+            ..ExportOptions::default()
+        };
+        let plan = plan_with_opts_and_findings(home, opts, vec![high_finding()]);
+        assert_eq!(
+            plan.count_overridden_findings(home),
+            1,
+            "--include-secrets must count High findings as overridden"
+        );
+    }
+
+    #[test]
+    fn count_overridden_medium_finding_not_counted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let opts = ExportOptions {
+            include_secrets: true,
+            ..ExportOptions::default()
+        };
+        let plan = plan_with_opts_and_findings(home, opts, vec![medium_finding()]);
+        assert_eq!(
+            plan.count_overridden_findings(home),
+            0,
+            "Medium findings are never overridden (only High ones are blocked)"
+        );
+    }
+
+    #[test]
+    fn count_overridden_mismatched_rule_id_is_zero() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let opts = ExportOptions {
+            allow_secret_rules: vec![SecretAllowance {
+                rule_id: "github-token".to_string(),
+                path_glob: None,
+            }],
+            ..ExportOptions::default()
+        };
+        let plan = plan_with_opts_and_findings(home, opts, vec![high_finding()]);
+        assert_eq!(
+            plan.count_overridden_findings(home),
+            0,
+            "--allow-secret for a different rule must not count the finding"
         );
     }
 

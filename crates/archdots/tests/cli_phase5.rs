@@ -445,3 +445,49 @@ fn export_include_secrets_does_not_bypass_sensitive_path() {
         "--check must not create the output directory"
     );
 }
+
+// ── 10. --allow-secret → findings_overridden > 0 in JSON (§8, H-2) ───────────
+
+#[test]
+fn export_allow_secret_yields_nonzero_findings_overridden_in_json() {
+    let env = TestEnv::new();
+    env.write_secrets_profile("override-check");
+
+    let output_dir = env.home.path().join("override-check-export");
+
+    // --allow-secret aws-access-key-id covers the High finding → exit 0,
+    // and findings_overridden must be 1 in the JSON summary.
+    let output = env
+        .cmd()
+        .args([
+            "export",
+            "override-check",
+            "--check",
+            "--json",
+            "--allow-secret",
+            "aws-access-key-id",
+            "--output",
+            output_dir.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "--allow-secret must make the plan safe (exit 0)\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("--json output must be valid JSON");
+
+    assert_eq!(
+        parsed["summary"]["findings_overridden"], 1,
+        "findings_overridden must be 1 when --allow-secret covers the High finding; \
+         got: {}",
+        parsed["summary"]["findings_overridden"]
+    );
+}

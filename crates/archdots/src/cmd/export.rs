@@ -421,7 +421,7 @@ fn print_next_steps(output_dir: &Path) {
 
 // ── JSON report (§8) ──────────────────────────────────────────────────────────
 
-fn summary_from_plan(plan: &ExportPlan, bytes_written: u64) -> serde_json::Value {
+fn summary_from_plan(plan: &ExportPlan, bytes_written: u64, home: &Path) -> serde_json::Value {
     serde_json::json!({
         "items_included": plan.items.iter().filter(|i| matches!(i.classification, ItemClassification::Include {})).count(),
         "items_excluded_by_path": plan.items.iter().filter(|i| matches!(i.classification, ItemClassification::ExcludeSensitivePath { .. })).count(),
@@ -430,7 +430,7 @@ fn summary_from_plan(plan: &ExportPlan, bytes_written: u64) -> serde_json::Value
         "items_missing": plan.items.iter().filter(|i| matches!(i.classification, ItemClassification::MissingSource {})).count(),
         "findings_high": plan.items.iter().flat_map(|i| &i.findings).filter(|f| f.severity == SecretSeverity::High).count(),
         "findings_medium": plan.items.iter().flat_map(|i| &i.findings).filter(|f| f.severity == SecretSeverity::Medium).count(),
-        "findings_overridden": 0u64,
+        "findings_overridden": plan.count_overridden_findings(home),
         "bytes_written": bytes_written,
     })
 }
@@ -614,7 +614,7 @@ pub fn run(args: ExportArgs) -> Result<i32> {
                 &output_dir,
                 format,
                 false,
-                summary_from_plan(&plan, 0),
+                summary_from_plan(&plan, 0, &home),
                 exit_code,
             )?;
         } else {
@@ -632,7 +632,7 @@ pub fn run(args: ExportArgs) -> Result<i32> {
                 &output_dir,
                 format,
                 false,
-                summary_from_plan(&plan, 0),
+                summary_from_plan(&plan, 0, &home),
                 2,
             )?;
         } else {
@@ -913,7 +913,8 @@ mod tests {
         );
 
         // Verify the full JSON shape.
-        let summary = super::summary_from_plan(&plan, 0);
+        let home = PathBuf::from("/home/u");
+        let summary = super::summary_from_plan(&plan, 0, &home);
         let output_dir = PathBuf::from("/tmp/test-export");
         let mut obj = serde_json::Map::new();
         obj.insert("schema_version".to_string(), serde_json::json!(1));
