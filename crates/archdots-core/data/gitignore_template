@@ -1,0 +1,34 @@
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.directory
+*.swp
+*~
+.idea/
+.vscode/
+
+# Lock files and caches
+*.lock
+*.cache
+__pycache__/
+.pytest_cache/
+node_modules/
+.npm/
+.yarn/
+
+# Build artefacts
+target/
+dist/
+build/
+*.o
+*.so
+*.a
+
+# Sensitive files (should never be in a dotfiles repo)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
