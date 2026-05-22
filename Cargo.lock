@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "archdots"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -137,10 +137,11 @@ dependencies = [
 
 [[package]]
 name = "archdots-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "once_cell",
+ "regex",
  "rustix 0.38.44",
  "serde",
  "serde_json",

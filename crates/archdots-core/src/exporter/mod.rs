@@ -15,6 +15,9 @@ use crate::error::ExportError;
 use crate::profile::Profile;
 
 mod glob;
+pub mod scanner;
+
+pub use scanner::SecretScanner;
 
 // ── public types ──────────────────────────────────────────────────────────────
 
@@ -343,6 +346,95 @@ impl<'a> Exporter<'a> {
         })
     }
 
+    // ── scan pipeline ─────────────────────────────────────────────────────────
+
+    /// Read the contents of every `Include` item via `canonicalize(source)` and
+    /// populate its `findings`. Idempotent: re-running clears and re-fills
+    /// findings for all `Include` items.
+    ///
+    /// Symlinks: if `source_canonical` is set (all `Include` items have it),
+    /// the bytes are read from the canonicalized path, which is the real file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExportError::ScannerInit`] if the embedded patterns fail to
+    /// compile (programming bug). Returns [`ExportError::Io`] if a file that
+    /// was readable at plan time is no longer readable at scan time.
+    pub fn scan(&self, plan: &mut ExportPlan) -> Result<(), ExportError> {
+        let sec = scanner::SecretScanner::new()?;
+        for item in &mut plan.items {
+            if !matches!(item.classification, ItemClassification::Include {}) {
+                continue;
+            }
+            // Idempotent: clear before refilling.
+            item.findings.clear();
+            // Clone to avoid simultaneous borrow of item.
+            let Some(canon) = item.source_canonical.clone() else {
+                continue;
+            };
+            let bytes = std::fs::read(&canon).map_err(|e| ExportError::Io {
+                path: canon.clone(),
+                source: e,
+            })?;
+            item.findings = sec.scan(&bytes);
+        }
+        Ok(())
+    }
+
+    /// Returns `true` iff the plan is safe to write without additional
+    /// interactive confirmation.
+    ///
+    /// Returns `false` when:
+    /// - Any item has an [`ItemClassification::ExcludeSensitivePath`]
+    ///   classification (the user has not acknowledged the sensitive file via
+    ///   `--allow-path`).
+    /// - Any `Include` item has a `High`-severity finding that is not covered
+    ///   by an entry in `opts.allow_secret_rules`.
+    ///
+    /// `opts.include_secrets` overrides the `High`-finding gate but **not**
+    /// the `ExcludeSensitivePath` gate.
+    #[must_use]
+    pub fn is_safe_to_write(&self, plan: &ExportPlan, opts: &ExportOptions) -> bool {
+        // Gate 1: any un-acknowledged sensitive path → unsafe.
+        for item in &plan.items {
+            if matches!(
+                item.classification,
+                ItemClassification::ExcludeSensitivePath { .. }
+            ) {
+                return false;
+            }
+        }
+
+        // Gate 2: any High finding not covered by an allowance.
+        if !opts.include_secrets {
+            for item in &plan.items {
+                let target_rel = item
+                    .target
+                    .strip_prefix(self.home)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+
+                for finding in &item.findings {
+                    if finding.severity != SecretSeverity::High {
+                        continue;
+                    }
+                    let allowed = opts.allow_secret_rules.iter().any(|a| {
+                        a.rule_id == finding.rule_id
+                            && match &a.path_glob {
+                                None => true,
+                                Some(g) => glob::glob_matches(g, &target_rel),
+                            }
+                    });
+                    if !allowed {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
+    }
+
     // ── private helpers ───────────────────────────────────────────────────────
 
     #[allow(clippy::too_many_lines)]
@@ -618,7 +710,10 @@ fn is_text_sniff(bytes: &[u8]) -> bool {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{ExportOptions, Exporter, ItemClassification, SensitivePathKind};
+    use super::{
+        ExportOptions, Exporter, ItemClassification, PlannedExportItem, SecretAllowance,
+        SecretFinding, SecretSeverity, SensitivePathKind,
+    };
     use crate::profile::{Dependencies, FileEntry, Hooks, LinkMode, Profile, ProfileMeta};
 
     // ── test helpers ──────────────────────────────────────────────────────────
@@ -1082,6 +1177,336 @@ mod tests {
                 ItemClassification::MissingSource {}
             ),
             "optional missing source must be MissingSource"
+        );
+    }
+
+    // ── scan integration tests ────────────────────────────────────────────────
+
+    /// AWS key content used across scan tests.
+    const AWS_KEY_CONTENT: &str = "export KEY=value\nAKIAIOSFODNN7EXAMPLE\n# end\n";
+
+    #[test]
+    fn scan_include_item_gets_findings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        write_file(&profile_dir, "zshrc", AWS_KEY_CONTENT.as_bytes());
+
+        let target = format!("{}/.zshrc", home.display());
+        let entry = make_entry("zshrc", "zshrc", &target);
+        let profile = make_profile("test", vec![entry]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let mut plan = exp.plan(&ExportOptions::default()).unwrap();
+
+        assert!(matches!(
+            plan.items[0].classification,
+            ItemClassification::Include {}
+        ));
+
+        exp.scan(&mut plan).unwrap();
+
+        let item = &plan.items[0];
+        assert!(!item.findings.is_empty(), "expected AWS key finding");
+        assert!(
+            item.findings
+                .iter()
+                .any(|f| f.rule_id == "aws-access-key-id"),
+            "expected aws-access-key-id finding"
+        );
+    }
+
+    #[test]
+    fn scan_excluded_by_size_findings_remain_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        // 2 MiB sparse file — will be ExcludeBySize; put AWS key in metadata
+        let large = profile_dir.join("big.conf");
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&large).unwrap();
+            f.write_all(AWS_KEY_CONTENT.as_bytes()).unwrap();
+            f.set_len(2 * 1024 * 1024).unwrap();
+        }
+
+        let target = format!("{}/.config/big.conf", home.display());
+        let entry = make_entry("big", "big.conf", &target);
+        let profile = make_profile("test", vec![entry]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let mut plan = exp.plan(&ExportOptions::default()).unwrap();
+
+        assert!(
+            matches!(
+                plan.items[0].classification,
+                ItemClassification::ExcludeBySize { .. }
+            ),
+            "expected ExcludeBySize"
+        );
+
+        exp.scan(&mut plan).unwrap();
+
+        assert!(
+            plan.items[0].findings.is_empty(),
+            "excluded item must not have findings after scan"
+        );
+    }
+
+    #[test]
+    fn scan_symlink_reads_real_file_findings_present() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        let real_dir = tmp.path().join("real");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        // Real file with AWS key (outside home so no sensitive-path hit)
+        let real = write_file(&real_dir, "zshrc", AWS_KEY_CONTENT.as_bytes());
+        // Symlink inside profile_dir
+        let link = profile_dir.join("zshrc");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let target = format!("{}/.zshrc", home.display());
+        let entry = make_entry("zshrc", "zshrc", &target);
+        let profile = make_profile("test", vec![entry]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let mut plan = exp.plan(&ExportOptions::default()).unwrap();
+
+        assert!(matches!(
+            plan.items[0].classification,
+            ItemClassification::Include {}
+        ));
+
+        exp.scan(&mut plan).unwrap();
+
+        assert!(
+            plan.items[0]
+                .findings
+                .iter()
+                .any(|f| f.rule_id == "aws-access-key-id"),
+            "symlink scan must find AWS key in real file"
+        );
+    }
+
+    #[test]
+    fn scan_idempotent_no_duplicate_findings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        write_file(&profile_dir, "zshrc", AWS_KEY_CONTENT.as_bytes());
+
+        let target = format!("{}/.zshrc", home.display());
+        let entry = make_entry("zshrc", "zshrc", &target);
+        let profile = make_profile("test", vec![entry]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let mut plan = exp.plan(&ExportOptions::default()).unwrap();
+
+        exp.scan(&mut plan).unwrap();
+        let count_after_first = plan.items[0].findings.len();
+        assert!(count_after_first > 0, "first scan must produce findings");
+
+        exp.scan(&mut plan).unwrap();
+        let count_after_second = plan.items[0].findings.len();
+        assert_eq!(
+            count_after_first, count_after_second,
+            "second scan must not duplicate findings"
+        );
+    }
+
+    // ── is_safe_to_write tests ────────────────────────────────────────────────
+
+    /// Build a minimal [`super::ExportPlan`] with one `Include` item and the
+    /// given findings. The item target is `home/.config/f`.
+    fn make_simple_plan(home: &Path, findings: Vec<SecretFinding>) -> super::ExportPlan {
+        let item = PlannedExportItem {
+            entry_id: "f".to_string(),
+            source: home.join("f"),
+            source_canonical: Some(home.join("f")),
+            target: home.join(".config").join("f"),
+            rel_in_repo: Some(PathBuf::from("dotfiles/.config/f")),
+            classification: ItemClassification::Include {},
+            findings,
+            size_bytes: Some(10),
+            is_text: Some(true),
+        };
+        super::ExportPlan {
+            profile_name: "t".to_string(),
+            items: vec![item],
+            options: ExportOptions::default(),
+        }
+    }
+
+    fn high_finding() -> SecretFinding {
+        SecretFinding {
+            rule_id: "aws-access-key-id".to_string(),
+            severity: SecretSeverity::High,
+            line: 1,
+            column: 1,
+            preview: "AKI...PLE (20 chars)".to_string(),
+        }
+    }
+
+    fn medium_finding() -> SecretFinding {
+        SecretFinding {
+            rule_id: "jwt".to_string(),
+            severity: SecretSeverity::Medium,
+            line: 2,
+            column: 1,
+            preview: "eyJ...abc (80 chars)".to_string(),
+        }
+    }
+
+    #[test]
+    fn is_safe_false_for_high_finding() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let profile = make_profile("t", vec![]);
+        let exp = Exporter::new(&profile, home, home);
+        let plan = make_simple_plan(home, vec![high_finding()]);
+        assert!(!exp.is_safe_to_write(&plan, &ExportOptions::default()));
+    }
+
+    #[test]
+    fn is_safe_true_with_matching_allow_secret() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let profile = make_profile("t", vec![]);
+        let exp = Exporter::new(&profile, home, home);
+        let plan = make_simple_plan(home, vec![high_finding()]);
+        let opts = ExportOptions {
+            allow_secret_rules: vec![SecretAllowance {
+                rule_id: "aws-access-key-id".to_string(),
+                path_glob: None,
+            }],
+            ..ExportOptions::default()
+        };
+        assert!(exp.is_safe_to_write(&plan, &opts));
+    }
+
+    #[test]
+    fn is_safe_false_allow_secret_path_glob_no_match() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let profile = make_profile("t", vec![]);
+        let exp = Exporter::new(&profile, home, home);
+        let plan = make_simple_plan(home, vec![high_finding()]);
+        let opts = ExportOptions {
+            allow_secret_rules: vec![SecretAllowance {
+                rule_id: "aws-access-key-id".to_string(),
+                path_glob: Some(".config/other-file".to_string()),
+            }],
+            ..ExportOptions::default()
+        };
+        assert!(
+            !exp.is_safe_to_write(&plan, &opts),
+            "non-matching path_glob must not allow the finding"
+        );
+    }
+
+    #[test]
+    fn is_safe_true_only_medium_findings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let profile = make_profile("t", vec![]);
+        let exp = Exporter::new(&profile, home, home);
+        let plan = make_simple_plan(home, vec![medium_finding()]);
+        assert!(
+            exp.is_safe_to_write(&plan, &ExportOptions::default()),
+            "medium findings must not block"
+        );
+    }
+
+    #[test]
+    fn is_safe_false_for_exclude_sensitive_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        let profile_dir = tmp.path().join("p");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        write_file(
+            &profile_dir,
+            "id_ed25519",
+            b"-----BEGIN OPENSSH PRIVATE KEY-----\n",
+        );
+        let target = format!("{}/.ssh/id_ed25519", home.display());
+        let entry = make_entry("key", "id_ed25519", &target);
+        let profile = make_profile("t", vec![entry]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let mut plan = exp.plan(&ExportOptions::default()).unwrap();
+
+        assert!(matches!(
+            &plan.items[0].classification,
+            ItemClassification::ExcludeSensitivePath { .. }
+        ));
+        exp.scan(&mut plan).unwrap();
+
+        assert!(
+            !exp.is_safe_to_write(&plan, &ExportOptions::default()),
+            "ExcludeSensitivePath must make plan unsafe"
+        );
+    }
+
+    #[test]
+    fn is_safe_true_include_secrets_overrides_high_finding() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let profile = make_profile("t", vec![]);
+        let exp = Exporter::new(&profile, home, home);
+        let plan = make_simple_plan(home, vec![high_finding()]);
+        let opts = ExportOptions {
+            include_secrets: true,
+            ..ExportOptions::default()
+        };
+        assert!(
+            exp.is_safe_to_write(&plan, &opts),
+            "include_secrets must override High finding gate"
+        );
+    }
+
+    #[test]
+    fn is_safe_include_secrets_does_not_override_sensitive_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        let profile_dir = tmp.path().join("p");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        write_file(&profile_dir, "id_rsa", b"-----BEGIN RSA PRIVATE KEY-----\n");
+        let target = format!("{}/.ssh/id_rsa", home.display());
+        let entry = make_entry("key", "id_rsa", &target);
+        let profile = make_profile("t", vec![entry]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+
+        let opts = ExportOptions {
+            include_secrets: true,
+            ..ExportOptions::default()
+        };
+        assert!(
+            !exp.is_safe_to_write(&plan, &opts),
+            "include_secrets must NOT override ExcludeSensitivePath gate"
+        );
+    }
+
+    #[test]
+    fn is_safe_true_for_clean_plan() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        let profile = make_profile("t", vec![]);
+        let exp = Exporter::new(&profile, home, home);
+        let plan = make_simple_plan(home, vec![]);
+        assert!(
+            exp.is_safe_to_write(&plan, &ExportOptions::default()),
+            "clean plan must be safe"
         );
     }
 
