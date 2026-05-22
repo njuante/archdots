@@ -265,9 +265,15 @@ fn export_json_check_parses_and_has_correct_shape() {
     assert!(parsed["profile"].is_string(), "profile must be a string");
     assert!(parsed["items"].is_array(), "items must be an array");
     assert!(parsed["wrote"].is_boolean(), "wrote must be a boolean");
-    assert_eq!(parsed["wrote"], false, "wrote must be false in --check mode");
+    assert_eq!(
+        parsed["wrote"], false,
+        "wrote must be false in --check mode"
+    );
     assert!(parsed["summary"].is_object(), "summary must be an object");
-    assert!(parsed["exit_code"].is_number(), "exit_code must be a number");
+    assert!(
+        parsed["exit_code"].is_number(),
+        "exit_code must be a number"
+    );
 
     // Every item's classification must be an object (never a bare string).
     for item in parsed["items"].as_array().unwrap_or(&vec![]) {
@@ -363,9 +369,6 @@ fn export_happy_path_creates_output_files_and_no_tmp_dirs() {
     assert!(
         leftover_tmp.is_empty(),
         "no staging dirs should remain after export; found: {:?}",
-        leftover_tmp
-            .iter()
-            .map(|e| e.path())
-            .collect::<Vec<_>>()
+        leftover_tmp.iter().map(|e| e.path()).collect::<Vec<_>>()
     );
 }

@@ -163,14 +163,34 @@ where
     let tty = std::io::stdout().is_terminal();
     macro_rules! red {
         ($s:expr) => {
-            if tty { $s.red().to_string() } else { $s.to_string() }
+            if tty {
+                $s.red().to_string()
+            } else {
+                $s.to_string()
+            }
         };
     }
 
-    let _ = writeln!(out, "{}", red!("┌────────────────────────────────────────────────────────────────────┐"));
-    let _ = writeln!(out, "{}", red!("│  WARNING: --include-secrets is active                              │"));
-    let _ = writeln!(out, "{}", red!("│  The following High-severity findings WILL be included.            │"));
-    let _ = writeln!(out, "{}", red!("└────────────────────────────────────────────────────────────────────┘"));
+    let _ = writeln!(
+        out,
+        "{}",
+        red!("┌────────────────────────────────────────────────────────────────────┐")
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        red!("│  WARNING: --include-secrets is active                              │")
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        red!("│  The following High-severity findings WILL be included.            │")
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        red!("└────────────────────────────────────────────────────────────────────┘")
+    );
     let _ = writeln!(out);
 
     for (item, finding) in findings_high {
@@ -202,9 +222,27 @@ where
 
 fn render_text_report(plan: &ExportPlan, output_dir: &Path, is_safe: bool) {
     let tty = std::io::stdout().is_terminal();
-    let ok = || if tty { "✓".green().to_string() } else { "✓".to_string() };
-    let warn = || if tty { "⚠".yellow().to_string() } else { "!".to_string() };
-    let err = || if tty { "✗".red().to_string() } else { "✗".to_string() };
+    let ok = || {
+        if tty {
+            "✓".green().to_string()
+        } else {
+            "✓".to_string()
+        }
+    };
+    let warn = || {
+        if tty {
+            "⚠".yellow().to_string()
+        } else {
+            "!".to_string()
+        }
+    };
+    let err = || {
+        if tty {
+            "✗".red().to_string()
+        } else {
+            "✗".to_string()
+        }
+    };
 
     let included = plan
         .items
@@ -214,7 +252,12 @@ fn render_text_report(plan: &ExportPlan, output_dir: &Path, is_safe: bool) {
     let excl_path = plan
         .items
         .iter()
-        .filter(|i| matches!(i.classification, ItemClassification::ExcludeSensitivePath { .. }))
+        .filter(|i| {
+            matches!(
+                i.classification,
+                ItemClassification::ExcludeSensitivePath { .. }
+            )
+        })
         .count();
     let excl_size = plan
         .items
@@ -275,7 +318,11 @@ fn render_text_report(plan: &ExportPlan, output_dir: &Path, is_safe: bool) {
         println!();
         println!("Findings:");
         for (src, f) in &high_items {
-            let marker = if tty { "HIGH".red().to_string() } else { "HIGH".to_string() };
+            let marker = if tty {
+                "HIGH".red().to_string()
+            } else {
+                "HIGH".to_string()
+            };
             println!(
                 "  {} {} {}:{}  [{}]  {}",
                 err(),
@@ -287,7 +334,11 @@ fn render_text_report(plan: &ExportPlan, output_dir: &Path, is_safe: bool) {
             );
         }
         for (src, f) in &med_items {
-            let marker = if tty { "MED".yellow().to_string() } else { "MED".to_string() };
+            let marker = if tty {
+                "MED".yellow().to_string()
+            } else {
+                "MED".to_string()
+            };
             println!(
                 "  {} {} {}:{}  [{}]  {}",
                 warn(),
@@ -319,14 +370,21 @@ fn render_text_report(plan: &ExportPlan, output_dir: &Path, is_safe: bool) {
 
 fn render_text_write_report(report: &ExportReport, output_dir: &Path) {
     let tty = std::io::stdout().is_terminal();
-    let ok = if tty { "✓".green().to_string() } else { "✓".to_string() };
+    let ok = if tty {
+        "✓".green().to_string()
+    } else {
+        "✓".to_string()
+    };
 
     println!("{ok} Export complete: {}", output_dir.display());
     println!();
     println!("Summary:");
     println!("  {} files included", report.items_included);
     if report.items_excluded_by_path > 0 {
-        println!("  {} excluded (sensitive path)", report.items_excluded_by_path);
+        println!(
+            "  {} excluded (sensitive path)",
+            report.items_excluded_by_path
+        );
     }
     if report.items_excluded_by_size > 0 {
         println!("  {} excluded (too large)", report.items_excluded_by_size);
@@ -647,9 +705,7 @@ mod tests {
     use archdots_core::exporter::{ExportFormat, ExportOptions, SecretAllowance};
     use clap::Parser;
 
-    use super::{
-        parse_allow_secrets, ExportArgs, ExportFormatArg, confirm_include_secrets_inner,
-    };
+    use super::{confirm_include_secrets_inner, parse_allow_secrets, ExportArgs, ExportFormatArg};
 
     #[derive(Debug, Parser)]
     struct TestCli {
@@ -689,9 +745,7 @@ mod tests {
 
     #[test]
     fn parse_format_invalid_is_clap_error() {
-        assert!(
-            TestCli::try_parse_from(["test", "myprofile", "--format", "invalid"]).is_err()
-        );
+        assert!(TestCli::try_parse_from(["test", "myprofile", "--format", "invalid"]).is_err());
     }
 
     #[test]
@@ -724,20 +778,15 @@ mod tests {
 
     #[test]
     fn parse_max_bytes_custom() {
-        let cli =
-            TestCli::try_parse_from(["test", "myprofile", "--max-bytes", "2097152"]).unwrap();
+        let cli = TestCli::try_parse_from(["test", "myprofile", "--max-bytes", "2097152"]).unwrap();
         assert_eq!(cli.args.max_bytes, 2_097_152);
     }
 
     #[test]
     fn parse_no_install_script_and_no_readme_invert_export_opts_bools() {
-        let cli = TestCli::try_parse_from([
-            "test",
-            "myprofile",
-            "--no-install-script",
-            "--no-readme",
-        ])
-        .unwrap();
+        let cli =
+            TestCli::try_parse_from(["test", "myprofile", "--no-install-script", "--no-readme"])
+                .unwrap();
         assert!(cli.args.no_install_script);
         assert!(cli.args.no_readme);
         let opts = ExportOptions {
@@ -805,8 +854,7 @@ mod tests {
 
     #[test]
     fn allow_secret_id_with_glob() {
-        let result =
-            parse_allow_secrets(&["jwt:.config/foo.json".to_string()]).unwrap();
+        let result = parse_allow_secrets(&["jwt:.config/foo.json".to_string()]).unwrap();
         assert_eq!(result[0].rule_id, "jwt");
         assert_eq!(result[0].path_glob.as_deref(), Some(".config/foo.json"));
     }
@@ -871,8 +919,14 @@ mod tests {
         let mut obj = serde_json::Map::new();
         obj.insert("schema_version".to_string(), serde_json::json!(1));
         obj.insert("profile".to_string(), serde_json::json!("test-profile"));
-        obj.insert("output_dir".to_string(), serde_json::to_value(&output_dir).unwrap());
-        obj.insert("format".to_string(), serde_json::to_value(ExportFormat::Full).unwrap());
+        obj.insert(
+            "output_dir".to_string(),
+            serde_json::to_value(&output_dir).unwrap(),
+        );
+        obj.insert(
+            "format".to_string(),
+            serde_json::to_value(ExportFormat::Full).unwrap(),
+        );
         obj.insert("wrote".to_string(), serde_json::json!(false));
         obj.insert("items".to_string(), items_val.clone());
         obj.insert("summary".to_string(), summary);
