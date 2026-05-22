@@ -8,7 +8,7 @@ use archdots_core::{
     error::ExportError,
     exporter::{
         ExportFormat, ExportOptions, ExportPlan, ExportReport, Exporter, ItemClassification,
-        PlannedExportItem, SecretFinding, SecretSeverity,
+        PlannedExportItem, SecretAllowance, SecretFinding, SecretSeverity,
     },
     profile::Profile,
 };
@@ -97,9 +97,35 @@ pub struct ExportArgs {
     pub json: bool,
 }
 
+// ── --allow-secret parsing (§E) ───────────────────────────────────────────────
+
+/// Parse raw `--allow-secret` strings (`ID` or `ID:GLOB`) into [`SecretAllowance`]s.
+///
+/// Splits on the **first** `:` only.  An empty string or an empty rule ID is
+/// an error.
+pub fn parse_allow_secrets(raw: &[String]) -> Result<Vec<SecretAllowance>, String> {
+    let mut out = Vec::with_capacity(raw.len());
+    for s in raw {
+        if s.is_empty() {
+            return Err("--allow-secret: rule ID must not be empty".to_string());
+        }
+        let (rule_id, path_glob) = match s.find(':') {
+            Some(idx) => {
+                let id = s[..idx].to_string();
+                if id.is_empty() {
+                    return Err("--allow-secret: rule ID must not be empty".to_string());
+                }
+                (id, Some(s[idx + 1..].to_string()))
+            }
+            None => (s.clone(), None),
+        };
+        out.push(SecretAllowance { rule_id, path_glob });
+    }
+    Ok(out)
+}
+
 // ── --include-secrets gate (§A.5) ─────────────────────────────────────────────
 
-/// Collect every High-severity finding from the plan.
 fn collect_high_findings<'a>(
     plan: &'a ExportPlan,
 ) -> Vec<(&'a PlannedExportItem, &'a SecretFinding)> {
@@ -114,7 +140,6 @@ fn collect_high_findings<'a>(
         .collect()
 }
 
-/// Show the banner + typed prompt on real I/O.
 fn confirm_include_secrets(findings_high: &[(&PlannedExportItem, &SecretFinding)]) -> bool {
     confirm_include_secrets_inner(
         findings_high,
@@ -123,11 +148,9 @@ fn confirm_include_secrets(findings_high: &[(&PlannedExportItem, &SecretFinding)
     )
 }
 
-/// Testable inner implementation: banner → prompt → compare.
+/// Testable inner: shows the warning banner + typed prompt.
 ///
-/// Returns `true` only when the user types exactly `I UNDERSTAND` (after
-/// trimming surrounding whitespace).  Any other input, including `EOF`,
-/// returns `false`.
+/// Returns `true` only when the user types `I UNDERSTAND` (after whitespace trim).
 pub(crate) fn confirm_include_secrets_inner<W, R>(
     findings_high: &[(&PlannedExportItem, &SecretFinding)],
     out: &mut W,
@@ -138,37 +161,16 @@ where
     R: BufRead,
 {
     let tty = std::io::stdout().is_terminal();
-
     macro_rules! red {
         ($s:expr) => {
-            if tty {
-                $s.red().to_string()
-            } else {
-                $s.to_string()
-            }
+            if tty { $s.red().to_string() } else { $s.to_string() }
         };
     }
 
-    let _ = writeln!(
-        out,
-        "{}",
-        red!("┌────────────────────────────────────────────────────────────────────┐")
-    );
-    let _ = writeln!(
-        out,
-        "{}",
-        red!("│  WARNING: --include-secrets is active                              │")
-    );
-    let _ = writeln!(
-        out,
-        "{}",
-        red!("│  The following High-severity findings WILL be included.            │")
-    );
-    let _ = writeln!(
-        out,
-        "{}",
-        red!("└────────────────────────────────────────────────────────────────────┘")
-    );
+    let _ = writeln!(out, "{}", red!("┌────────────────────────────────────────────────────────────────────┐"));
+    let _ = writeln!(out, "{}", red!("│  WARNING: --include-secrets is active                              │"));
+    let _ = writeln!(out, "{}", red!("│  The following High-severity findings WILL be included.            │"));
+    let _ = writeln!(out, "{}", red!("└────────────────────────────────────────────────────────────────────┘"));
     let _ = writeln!(out);
 
     for (item, finding) in findings_high {
@@ -196,73 +198,227 @@ where
     line.trim() == "I UNDERSTAND"
 }
 
-// ── other helpers ──────────────────────────────────────────────────────────────
+// ── text report ───────────────────────────────────────────────────────────────
 
-fn print_plan_summary(plan: &ExportPlan, output_dir: &Path, is_safe: bool) {
-    let items_included = plan
+fn render_text_report(plan: &ExportPlan, output_dir: &Path, is_safe: bool) {
+    let tty = std::io::stdout().is_terminal();
+    let ok = || if tty { "✓".green().to_string() } else { "✓".to_string() };
+    let warn = || if tty { "⚠".yellow().to_string() } else { "!".to_string() };
+    let err = || if tty { "✗".red().to_string() } else { "✗".to_string() };
+
+    let included = plan
         .items
         .iter()
         .filter(|i| matches!(i.classification, ItemClassification::Include {}))
         .count();
-    let items_excluded_path = plan
+    let excl_path = plan
         .items
         .iter()
         .filter(|i| matches!(i.classification, ItemClassification::ExcludeSensitivePath { .. }))
         .count();
-    let items_excluded_size = plan
+    let excl_size = plan
         .items
         .iter()
         .filter(|i| matches!(i.classification, ItemClassification::ExcludeBySize { .. }))
         .count();
-    let items_excluded_binary = plan
+    let excl_bin = plan
         .items
         .iter()
         .filter(|i| matches!(i.classification, ItemClassification::ExcludeBinary {}))
         .count();
-    let items_missing = plan
+    let missing = plan
         .items
         .iter()
         .filter(|i| matches!(i.classification, ItemClassification::MissingSource {}))
         .count();
-    let findings_high = plan
-        .items
-        .iter()
-        .flat_map(|i| &i.findings)
-        .filter(|f| f.severity == SecretSeverity::High)
-        .count();
-    let findings_medium = plan
-        .items
-        .iter()
-        .flat_map(|i| &i.findings)
-        .filter(|f| f.severity == SecretSeverity::Medium)
-        .count();
 
-    eprintln!("Export plan: {} → {}", plan.profile_name, output_dir.display());
-    eprintln!(
-        "  included={items_included} excl-path={items_excluded_path} \
-         excl-size={items_excluded_size} excl-binary={items_excluded_binary} \
-         missing={items_missing}"
-    );
-    eprintln!("  findings: high={findings_high} medium={findings_medium}");
-    if !is_safe {
-        eprintln!("  status: BLOCKED");
+    let high_items: Vec<_> = plan
+        .items
+        .iter()
+        .flat_map(|i| {
+            i.findings
+                .iter()
+                .filter(|f| f.severity == SecretSeverity::High)
+                .map(move |f| (&i.source, f))
+        })
+        .collect();
+    let med_items: Vec<_> = plan
+        .items
+        .iter()
+        .flat_map(|i| {
+            i.findings
+                .iter()
+                .filter(|f| f.severity == SecretSeverity::Medium)
+                .map(move |f| (&i.source, f))
+        })
+        .collect();
+
+    println!("Export plan: {}", plan.profile_name);
+    println!("Output:      {}", output_dir.display());
+    println!();
+    println!("Items:");
+    println!("  {} {} included", ok(), included);
+    if excl_path > 0 {
+        println!("  {} {} excluded (sensitive path)", warn(), excl_path);
+    }
+    if excl_size > 0 {
+        println!("  {} {} excluded (too large)", warn(), excl_size);
+    }
+    if excl_bin > 0 {
+        println!("  {} {} excluded (binary)", warn(), excl_bin);
+    }
+    if missing > 0 {
+        println!("  {} {} missing source", warn(), missing);
+    }
+
+    if !high_items.is_empty() || !med_items.is_empty() {
+        println!();
+        println!("Findings:");
+        for (src, f) in &high_items {
+            let marker = if tty { "HIGH".red().to_string() } else { "HIGH".to_string() };
+            println!(
+                "  {} {} {}:{}  [{}]  {}",
+                err(),
+                marker,
+                src.display(),
+                f.line,
+                f.rule_id,
+                f.preview
+            );
+        }
+        for (src, f) in &med_items {
+            let marker = if tty { "MED".yellow().to_string() } else { "MED".to_string() };
+            println!(
+                "  {} {} {}:{}  [{}]  {}",
+                warn(),
+                marker,
+                src.display(),
+                f.line,
+                f.rule_id,
+                f.preview
+            );
+        }
+    }
+
+    println!();
+    if is_safe {
+        println!("Status: {} ready to export", ok());
+    } else if excl_path > 0 {
+        println!(
+            "Status: {} blocked — sensitive path(s) excluded; use --allow-path to override",
+            err()
+        );
+    } else {
+        println!(
+            "Status: {} blocked — High-severity finding(s); use --allow-secret or \
+             --include-secrets to override",
+            err()
+        );
     }
 }
 
-fn print_write_report(report: &ExportReport, output_dir: &Path) {
-    eprintln!("Export complete: {}", output_dir.display());
-    eprintln!(
-        "  included={} bytes={}",
-        report.items_included, report.bytes_written
-    );
-    eprintln!();
-    eprintln!("Next steps:");
-    eprintln!("  cd {}", output_dir.display());
-    eprintln!("  git init");
-    eprintln!("  git add .");
-    eprintln!("  git commit -m \"Initial commit (generated by archdots)\"");
-    eprintln!("  gh repo create --public --source=. --push");
+fn render_text_write_report(report: &ExportReport, output_dir: &Path) {
+    let tty = std::io::stdout().is_terminal();
+    let ok = if tty { "✓".green().to_string() } else { "✓".to_string() };
+
+    println!("{ok} Export complete: {}", output_dir.display());
+    println!();
+    println!("Summary:");
+    println!("  {} files included", report.items_included);
+    if report.items_excluded_by_path > 0 {
+        println!("  {} excluded (sensitive path)", report.items_excluded_by_path);
+    }
+    if report.items_excluded_by_size > 0 {
+        println!("  {} excluded (too large)", report.items_excluded_by_size);
+    }
+    if report.items_excluded_binary > 0 {
+        println!("  {} excluded (binary)", report.items_excluded_binary);
+    }
+    if report.items_missing > 0 {
+        println!("  {} missing source", report.items_missing);
+    }
+    if report.findings_high > 0 || report.findings_medium > 0 {
+        println!(
+            "  {} High / {} Medium findings",
+            report.findings_high, report.findings_medium
+        );
+    }
+    if report.findings_overridden > 0 {
+        println!(
+            "  {} finding(s) overridden by --include-secrets / --allow-secret",
+            report.findings_overridden
+        );
+    }
+    println!("  {} bytes written", report.bytes_written);
 }
+
+fn print_next_steps(output_dir: &Path) {
+    println!();
+    println!("Next steps:");
+    println!("  cd {}", output_dir.display());
+    println!("  git init");
+    println!("  git add .");
+    println!("  git commit -m \"Initial commit (generated by archdots)\"");
+    println!("  gh repo create --public --source=. --push");
+}
+
+// ── JSON report (§8) ──────────────────────────────────────────────────────────
+
+fn summary_from_plan(plan: &ExportPlan, bytes_written: u64) -> serde_json::Value {
+    serde_json::json!({
+        "items_included": plan.items.iter().filter(|i| matches!(i.classification, ItemClassification::Include {})).count(),
+        "items_excluded_by_path": plan.items.iter().filter(|i| matches!(i.classification, ItemClassification::ExcludeSensitivePath { .. })).count(),
+        "items_excluded_by_size": plan.items.iter().filter(|i| matches!(i.classification, ItemClassification::ExcludeBySize { .. })).count(),
+        "items_excluded_binary": plan.items.iter().filter(|i| matches!(i.classification, ItemClassification::ExcludeBinary {})).count(),
+        "items_missing": plan.items.iter().filter(|i| matches!(i.classification, ItemClassification::MissingSource {})).count(),
+        "findings_high": plan.items.iter().flat_map(|i| &i.findings).filter(|f| f.severity == SecretSeverity::High).count(),
+        "findings_medium": plan.items.iter().flat_map(|i| &i.findings).filter(|f| f.severity == SecretSeverity::Medium).count(),
+        "findings_overridden": 0u64,
+        "bytes_written": bytes_written,
+    })
+}
+
+fn summary_from_report(report: &ExportReport) -> serde_json::Value {
+    serde_json::json!({
+        "items_included": report.items_included,
+        "items_excluded_by_path": report.items_excluded_by_path,
+        "items_excluded_by_size": report.items_excluded_by_size,
+        "items_excluded_binary": report.items_excluded_binary,
+        "items_missing": report.items_missing,
+        "findings_high": report.findings_high,
+        "findings_medium": report.findings_medium,
+        "findings_overridden": report.findings_overridden,
+        "bytes_written": report.bytes_written,
+    })
+}
+
+fn render_json(
+    plan: &ExportPlan,
+    profile: &str,
+    output_dir: &Path,
+    format: ExportFormat,
+    wrote: bool,
+    summary: serde_json::Value,
+    exit_code: i32,
+) -> Result<()> {
+    let items = serde_json::to_value(&plan.items)?;
+    let mut obj = serde_json::Map::new();
+    obj.insert("schema_version".to_string(), serde_json::json!(1));
+    obj.insert("profile".to_string(), serde_json::json!(profile));
+    obj.insert("output_dir".to_string(), serde_json::to_value(output_dir)?);
+    obj.insert("format".to_string(), serde_json::to_value(format)?);
+    obj.insert("wrote".to_string(), serde_json::json!(wrote));
+    obj.insert("items".to_string(), items);
+    obj.insert("summary".to_string(), summary);
+    obj.insert("exit_code".to_string(), serde_json::json!(exit_code));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::Value::Object(obj))?
+    );
+    Ok(())
+}
+
+// ── confirm write ──────────────────────────────────────────────────────────────
 
 fn confirm_write() -> Result<bool> {
     if !std::io::stdin().is_terminal() {
@@ -285,14 +441,19 @@ fn confirm_write() -> Result<bool> {
 pub fn run(args: ExportArgs) -> Result<i32> {
     let format: ExportFormat = args.format.into();
 
-    // 1. Reject --include-secrets on non-TTY stdin early (§A.5, §H #12).
-    //    This is checked before anything expensive.
+    // 1. Validate flag combinations early (§H #20).
+    if format == ExportFormat::ProfileOnly && args.include_secrets {
+        eprintln!("--include-secrets is meaningless with --format profile-only");
+        return Ok(3);
+    }
+
+    // 2. Reject --include-secrets on non-TTY stdin (§A.5, §H #12).
     if args.include_secrets && !std::io::stdin().is_terminal() {
         eprintln!("refusing: --include-secrets requires a TTY");
         return Ok(3);
     }
 
-    // 2. Load profile.
+    // 3. Load profile.
     let profile_dir = xdg::profiles_dir()?;
     let profile_path = profile_dir.join(format!("{}.toml", args.profile));
     if !profile_path.exists() {
@@ -311,13 +472,13 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         }
     };
 
-    // 3. Resolve output directory (§Q1: ./<profile>-export/ default).
+    // 4. Resolve output directory (§Q1: ./<profile>-export/ default).
     let output_dir = args
         .output
         .clone()
         .unwrap_or_else(|| PathBuf::from(format!("./{}-export", args.profile)));
 
-    // 4. Pre-flight: output_dir must not be a regular file (§H #25).
+    // 5. Pre-flight: output_dir must not be a regular file (§H #25).
     if output_dir.is_file() {
         eprintln!(
             "output path is a regular file: {} (expected a directory)",
@@ -326,23 +487,32 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         return Ok(3);
     }
 
-    // 5. Build ExportOptions (allow_secret_rules filled in Part 4).
+    // 6. Parse --allow-secret strings.
+    let allow_secret_rules = match parse_allow_secrets(&args.allow_secret) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{e}");
+            return Ok(3);
+        }
+    };
+
+    // 7. Build ExportOptions.
     let opts = ExportOptions {
         format,
         allow_paths: args.allow_path.clone(),
         allow_binary: args.allow_binary.clone(),
-        allow_secret_rules: vec![],
+        allow_secret_rules,
         max_bytes: args.max_bytes,
         include_secrets: args.include_secrets,
         include_install_script: !args.no_install_script,
         include_readme: !args.no_readme,
     };
 
-    // 6. Build Exporter.
+    // 8. Build Exporter.
     let home = xdg::home_dir()?;
     let exporter = Exporter::new(&profile, &profile_dir, &home);
 
-    // 7. PLAN.
+    // 9. PLAN.
     let mut plan = match exporter.plan(&opts) {
         Ok(p) => p,
         Err(e) => {
@@ -351,7 +521,7 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         }
     };
 
-    // 8. SCAN (skip entirely for profile-only; §B).
+    // 10. SCAN (skip entirely for profile-only; §B).
     if format == ExportFormat::Full {
         if let Err(e) = exporter.scan(&mut plan) {
             eprintln!("scan error: {e}");
@@ -359,8 +529,7 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         }
     }
 
-    // 9. --include-secrets I UNDERSTAND gate (non-check mode only; §A.5, #13).
-    //    --yes is orthogonal: it never skips this prompt (#13).
+    // 11. --include-secrets I UNDERSTAND gate (non-check mode only; §A.5, #13).
     if args.include_secrets && !args.check {
         let high_findings = collect_high_findings(&plan);
         if !high_findings.is_empty() {
@@ -375,29 +544,53 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         }
     }
 
-    // 10. DECIDE.
+    // 12. DECIDE.
     let is_safe = exporter.is_safe_to_write(&plan, &opts);
     let exit_code = if is_safe { 0i32 } else { 2i32 };
 
-    // 11. --check: report and exit, never write (§H #5).
+    // 13. --check: report and exit, never write (§H #5).
     if args.check {
-        print_plan_summary(&plan, &output_dir, is_safe);
+        if args.json {
+            render_json(
+                &plan,
+                &args.profile,
+                &output_dir,
+                format,
+                false,
+                summary_from_plan(&plan, 0),
+                exit_code,
+            )?;
+        } else {
+            render_text_report(&plan, &output_dir, is_safe);
+        }
         return Ok(exit_code);
     }
 
-    // 12. Not safe → blocked (exit 2).
+    // 14. Not safe → blocked (exit 2).
     if !is_safe {
-        print_plan_summary(&plan, &output_dir, false);
+        if args.json {
+            render_json(
+                &plan,
+                &args.profile,
+                &output_dir,
+                format,
+                false,
+                summary_from_plan(&plan, 0),
+                2,
+            )?;
+        } else {
+            render_text_report(&plan, &output_dir, false);
+        }
         return Ok(2);
     }
 
-    // 13. CONFIRM: ask unless --yes (§H #21).
+    // 15. CONFIRM: ask unless --yes (§H #21).
     if !args.yes && !confirm_write()? {
         println!("Aborted.");
         return Ok(1);
     }
 
-    // 14. WRITE.
+    // 16. WRITE.
     let report = match exporter.write(&plan, &output_dir, &opts, args.force) {
         Ok(r) => r,
         Err(ExportError::OutputNotEmpty(_)) => {
@@ -428,8 +621,22 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         }
     };
 
-    // 15. Post-write report + hints (refined in Part 4).
-    print_write_report(&report, &output_dir);
+    // 17. Post-write report + hints.
+    if args.json {
+        render_json(
+            &plan,
+            &args.profile,
+            &output_dir,
+            format,
+            true,
+            summary_from_report(&report),
+            0,
+        )?;
+    } else {
+        render_text_write_report(&report, &output_dir);
+        print_next_steps(&output_dir);
+    }
+
     Ok(0)
 }
 
@@ -437,10 +644,12 @@ pub fn run(args: ExportArgs) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use archdots_core::exporter::{ExportFormat, ExportOptions};
+    use archdots_core::exporter::{ExportFormat, ExportOptions, SecretAllowance};
     use clap::Parser;
 
-    use super::{ExportArgs, ExportFormatArg, confirm_include_secrets_inner};
+    use super::{
+        parse_allow_secrets, ExportArgs, ExportFormatArg, confirm_include_secrets_inner,
+    };
 
     #[derive(Debug, Parser)]
     struct TestCli {
@@ -582,5 +791,99 @@ mod tests {
     #[test]
     fn confirm_eof_returns_false() {
         assert!(!run_prompt(""));
+    }
+
+    // ── Part 4: parse_allow_secrets ───────────────────────────────────────────
+
+    #[test]
+    fn allow_secret_id_only() {
+        let result = parse_allow_secrets(&["jwt".to_string()]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].rule_id, "jwt");
+        assert!(result[0].path_glob.is_none());
+    }
+
+    #[test]
+    fn allow_secret_id_with_glob() {
+        let result =
+            parse_allow_secrets(&["jwt:.config/foo.json".to_string()]).unwrap();
+        assert_eq!(result[0].rule_id, "jwt");
+        assert_eq!(result[0].path_glob.as_deref(), Some(".config/foo.json"));
+    }
+
+    #[test]
+    fn allow_secret_glob_with_colon_in_path_splits_on_first_colon() {
+        // A glob might theoretically have colons; only the first one is the separator.
+        let result = parse_allow_secrets(&["rule:path/a:b".to_string()]).unwrap();
+        assert_eq!(result[0].rule_id, "rule");
+        assert_eq!(result[0].path_glob.as_deref(), Some("path/a:b"));
+    }
+
+    #[test]
+    fn allow_secret_empty_string_is_error() {
+        assert!(parse_allow_secrets(&["".to_string()]).is_err());
+    }
+
+    #[test]
+    fn allow_secret_colon_only_is_error() {
+        assert!(parse_allow_secrets(&[":".to_string()]).is_err());
+    }
+
+    // ── Part 4: JSON shape ────────────────────────────────────────────────────
+
+    #[test]
+    fn json_schema_version_is_1_and_classification_is_object() {
+        use archdots_core::exporter::{ExportPlan, ItemClassification, PlannedExportItem};
+        use std::path::PathBuf;
+
+        let item = PlannedExportItem {
+            entry_id: "test".to_string(),
+            source: PathBuf::from("/home/u/.zshrc"),
+            source_canonical: Some(PathBuf::from("/home/u/.zshrc")),
+            target: PathBuf::from("/home/u/.zshrc"),
+            rel_in_repo: Some(PathBuf::from("dotfiles/.zshrc")),
+            classification: ItemClassification::Include {},
+            findings: vec![],
+            size_bytes: Some(42),
+            is_text: Some(true),
+        };
+
+        let plan = ExportPlan {
+            profile_name: "test-profile".to_string(),
+            items: vec![item],
+            options: ExportOptions::default(),
+        };
+
+        let items_val = serde_json::to_value(&plan.items).unwrap();
+        let classification = &items_val[0]["classification"];
+        assert!(
+            classification.is_object(),
+            "classification must be a JSON object, got: {classification}"
+        );
+        assert!(
+            classification.get("include").is_some(),
+            "Include variant must have 'include' key"
+        );
+
+        // Verify the full JSON shape.
+        let summary = super::summary_from_plan(&plan, 0);
+        let output_dir = PathBuf::from("/tmp/test-export");
+        let mut obj = serde_json::Map::new();
+        obj.insert("schema_version".to_string(), serde_json::json!(1));
+        obj.insert("profile".to_string(), serde_json::json!("test-profile"));
+        obj.insert("output_dir".to_string(), serde_json::to_value(&output_dir).unwrap());
+        obj.insert("format".to_string(), serde_json::to_value(ExportFormat::Full).unwrap());
+        obj.insert("wrote".to_string(), serde_json::json!(false));
+        obj.insert("items".to_string(), items_val.clone());
+        obj.insert("summary".to_string(), summary);
+        obj.insert("exit_code".to_string(), serde_json::json!(0));
+        let json = serde_json::Value::Object(obj);
+
+        assert_eq!(json["schema_version"], 1);
+        assert!(json["items"].is_array());
+        assert!(
+            json["items"][0]["classification"].is_object(),
+            "items[0].classification must be object"
+        );
     }
 }
