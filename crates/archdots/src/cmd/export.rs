@@ -126,9 +126,7 @@ pub fn parse_allow_secrets(raw: &[String]) -> Result<Vec<SecretAllowance>, Strin
 
 // ── --include-secrets gate (§A.5) ─────────────────────────────────────────────
 
-fn collect_high_findings<'a>(
-    plan: &'a ExportPlan,
-) -> Vec<(&'a PlannedExportItem, &'a SecretFinding)> {
+fn collect_high_findings(plan: &ExportPlan) -> Vec<(&PlannedExportItem, &SecretFinding)> {
     plan.items
         .iter()
         .flat_map(|item| {
@@ -220,6 +218,7 @@ where
 
 // ── text report ───────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn render_text_report(plan: &ExportPlan, output_dir: &Path, is_safe: bool) {
     let tty = std::io::stdout().is_terminal();
     let ok = || {
@@ -495,7 +494,7 @@ fn confirm_write() -> Result<bool> {
 // ── entry point ───────────────────────────────────────────────────────────────
 
 /// Run `archdots export` and return the process exit code.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn run(args: ExportArgs) -> Result<i32> {
     let format: ExportFormat = args.format.into();
 
@@ -702,7 +701,7 @@ pub fn run(args: ExportArgs) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use archdots_core::exporter::{ExportFormat, ExportOptions, SecretAllowance};
+    use archdots_core::exporter::{ExportFormat, ExportOptions};
     use clap::Parser;
 
     use super::{confirm_include_secrets_inner, parse_allow_secrets, ExportArgs, ExportFormatArg};
@@ -869,7 +868,7 @@ mod tests {
 
     #[test]
     fn allow_secret_empty_string_is_error() {
-        assert!(parse_allow_secrets(&["".to_string()]).is_err());
+        assert!(parse_allow_secrets(&[String::new()]).is_err());
     }
 
     #[test]
