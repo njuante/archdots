@@ -1084,4 +1084,63 @@ mod tests {
             "optional missing source must be MissingSource"
         );
     }
+
+    #[test]
+    fn plan_allow_binary_overrides_binary_filter() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        // Binary file (null bytes).
+        write_file(&profile_dir, "firmware.bin", &[0u8, 1, 2, 3, 0, 255]);
+
+        let target = format!("{}/.config/firmware.bin", home.display());
+        let entry = make_entry("fw", "firmware.bin", &target);
+        let profile = make_profile("test", vec![entry]);
+
+        let opts = ExportOptions {
+            allow_binary: vec!["**/*.bin".to_string()],
+            ..ExportOptions::default()
+        };
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&opts).unwrap();
+
+        assert!(
+            matches!(plan.items[0].classification, ItemClassification::Include {}),
+            "--allow-binary must override ExcludeBinary; got {:?}",
+            plan.items[0].classification
+        );
+    }
+
+    #[test]
+    fn plan_pem_suffix_excluded_by_denylist() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        write_file(&profile_dir, "server.pem", b"-----BEGIN CERTIFICATE-----\n");
+
+        let target = format!("{}/.config/server.pem", home.display());
+        let entry = make_entry("cert", "server.pem", &target);
+        let profile = make_profile("test", vec![entry]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+
+        assert!(
+            matches!(
+                &plan.items[0].classification,
+                ItemClassification::ExcludeSensitivePath {
+                    kind: SensitivePathKind::Suffix,
+                    ..
+                }
+            ),
+            "expected ExcludeSensitivePath(Suffix) for .pem file; got {:?}",
+            plan.items[0].classification
+        );
+    }
 }
