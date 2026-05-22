@@ -120,6 +120,8 @@ enum Commands {
         #[arg(long)]
         verbose: bool,
     },
+    /// Export a profile as a publishable directory.
+    Export(cmd::export::ExportArgs),
     /// Launch the interactive TUI.
     Tui,
 }
@@ -237,6 +239,11 @@ fn main() -> Result<()> {
                 json,
                 verbose,
             })?;
+            std::process::exit(code);
+        }
+
+        Commands::Export(args) => {
+            let code = cmd::export::run(args)?;
             std::process::exit(code);
         }
     }
