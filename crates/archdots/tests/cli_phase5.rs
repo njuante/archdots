@@ -406,7 +406,7 @@ fn export_happy_path_creates_output_files_and_no_tmp_dirs() {
     );
 }
 
-// ── 9. --include-secrets does NOT lift the sensitive-path filter (§A.5) ──────
+// ── 9. sensitive-path filter always blocks export (§A.5, Gate 1) ─────────────
 
 #[test]
 fn export_include_secrets_does_not_bypass_sensitive_path() {
@@ -415,19 +415,17 @@ fn export_include_secrets_does_not_bypass_sensitive_path() {
 
     let output_dir = env.home.path().join("ssh-path-export");
 
-    // --check is exempt from the non-TTY guard (no interactive gate in --check
-    // mode), so this runs fully on a piped stdin.  The source file is clean
-    // (no High findings), but the target ~/.ssh/config matches the `ssh`
-    // prefix rule in sensitive_paths.toml.  is_safe_to_write returns false for
-    // ExcludeSensitivePath regardless of --include-secrets, so exit code must
-    // be 2, not 0.
+    // The source file is clean (no High findings), but the target ~/.ssh/config
+    // matches the `ssh` prefix rule in sensitive_paths.toml.
+    // is_safe_to_write Gate 1 (ExcludeSensitivePath) is independent of
+    // include_secrets — it always returns false for sensitive-path items.
+    // Exit code must be 2, not 0.
     let output = env
         .cmd()
         .args([
             "export",
             "ssh-path",
             "--check",
-            "--include-secrets",
             "--output",
             output_dir.to_str().unwrap(),
         ])
@@ -437,7 +435,7 @@ fn export_include_secrets_does_not_bypass_sensitive_path() {
     assert_eq!(
         output.status.code(),
         Some(2),
-        "--include-secrets must not bypass the sensitive-path filter; \
+        "sensitive-path filter must block export; \
          expected exit 2\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
