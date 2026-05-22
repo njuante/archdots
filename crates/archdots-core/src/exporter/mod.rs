@@ -957,18 +957,31 @@ impl<'a> Exporter<'a> {
 
         // 4. Sensitive-path check (target and canonical source).
         let rel_target_str = rel_target.to_string_lossy();
-        let sensitive_hit = self.check_sensitive_path(&rel_target_str).or_else(|| {
-            source_canonical
-                .strip_prefix(self.home)
-                .ok()
-                .and_then(|rel| self.check_sensitive_path(&rel.to_string_lossy()))
-        });
+
+        // Compute hits from target and source separately: --allow-path must match
+        // the path that triggered the hit.  If only the canonical source matched
+        // (e.g. a profile symlink pointing into ~/.ssh/), then a glob matching only
+        // the innocuous target name must NOT grant the override.
+        let target_hit = self.check_sensitive_path(&rel_target_str);
+        let source_rel_str: Option<String> = source_canonical
+            .strip_prefix(self.home)
+            .ok()
+            .map(|rel| rel.to_string_lossy().into_owned());
+        let source_hit = source_rel_str
+            .as_deref()
+            .and_then(|s| self.check_sensitive_path(s));
+
+        let sensitive_hit = target_hit.clone().or_else(|| source_hit.clone());
 
         if let Some((rule_id, kind)) = sensitive_hit {
-            let overridden = opts
-                .allow_paths
-                .iter()
-                .any(|pat| glob::glob_matches(pat, &rel_target_str));
+            let overridden = opts.allow_paths.iter().any(|pat| {
+                (target_hit.is_some() && glob::glob_matches(pat, &rel_target_str))
+                    || source_hit.is_some()
+                        && source_rel_str
+                            .as_deref()
+                            .map(|s| glob::glob_matches(pat, s))
+                            .unwrap_or(false)
+            });
             if !overridden {
                 return Ok(PlannedExportItem {
                     entry_id,
@@ -1669,6 +1682,83 @@ mod tests {
         assert!(
             matches!(plan.items[0].classification, ItemClassification::Include {}),
             "--allow-path must override the denylist; got {:?}",
+            plan.items[0].classification
+        );
+    }
+
+    // H-1 regression: --allow-path matching the target must NOT bypass a
+    // sensitive hit that was triggered only by the canonical source.
+    #[test]
+    fn plan_allow_path_target_does_not_bypass_source_sensitive_hit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        // Real file lives under ~/.ssh/ → sensitive.
+        let real = write_file(&home, ".ssh/id_ed25519", b"private key bytes\n");
+        // Profile source is a symlink with an innocent name.
+        let link = profile_dir.join("innocent");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        // Target is also innocent (not under .ssh/).
+        let target = format!("{}/.config/innocent", home.display());
+        let entry = make_entry("innocent", "innocent", &target);
+        let profile = make_profile("test", vec![entry]);
+
+        // --allow-path matches the target name, NOT the canonical source.
+        // Before the fix this would incorrectly override the sensitive-path hit.
+        let opts = ExportOptions {
+            allow_paths: vec![".config/innocent".to_string()],
+            ..ExportOptions::default()
+        };
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&opts).unwrap();
+
+        assert!(
+            matches!(
+                &plan.items[0].classification,
+                ItemClassification::ExcludeSensitivePath { .. }
+            ),
+            "--allow-path on the target alone must not override a hit from the \
+             canonical source; got {:?}",
+            plan.items[0].classification
+        );
+    }
+
+    // Companion positive test: --allow-path matching the canonical source path
+    // correctly overrides the sensitive hit.
+    #[test]
+    fn plan_allow_path_source_path_overrides_source_sensitive_hit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        let real = write_file(&home, ".ssh/id_ed25519", b"private key bytes\n");
+        let link = profile_dir.join("innocent");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let target = format!("{}/.config/innocent", home.display());
+        let entry = make_entry("innocent", "innocent", &target);
+        let profile = make_profile("test", vec![entry]);
+
+        // --allow-path matches the canonical source path that triggered the hit.
+        let opts = ExportOptions {
+            allow_paths: vec![".ssh/id_ed25519".to_string()],
+            ..ExportOptions::default()
+        };
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&opts).unwrap();
+
+        assert!(
+            matches!(plan.items[0].classification, ItemClassification::Include {}),
+            "--allow-path on the canonical source path must override the sensitive \
+             hit; got {:?}",
             plan.items[0].classification
         );
     }
