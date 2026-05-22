@@ -1,14 +1,18 @@
 //! Implementation of `archdots export`.
 
-use std::io::{IsTerminal, Write as _};
+use std::io::{BufRead, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use archdots_core::{
     error::ExportError,
-    exporter::{ExportFormat, ExportOptions, ExportPlan, ExportReport, Exporter, ItemClassification},
+    exporter::{
+        ExportFormat, ExportOptions, ExportPlan, ExportReport, Exporter, ItemClassification,
+        PlannedExportItem, SecretFinding, SecretSeverity,
+    },
     profile::Profile,
 };
+use owo_colors::OwoColorize;
 
 use crate::xdg;
 
@@ -93,7 +97,106 @@ pub struct ExportArgs {
     pub json: bool,
 }
 
-// ── internal helpers (text rendering — refined in Part 4) ─────────────────────
+// ── --include-secrets gate (§A.5) ─────────────────────────────────────────────
+
+/// Collect every High-severity finding from the plan.
+fn collect_high_findings<'a>(
+    plan: &'a ExportPlan,
+) -> Vec<(&'a PlannedExportItem, &'a SecretFinding)> {
+    plan.items
+        .iter()
+        .flat_map(|item| {
+            item.findings
+                .iter()
+                .filter(|f| f.severity == SecretSeverity::High)
+                .map(move |f| (item, f))
+        })
+        .collect()
+}
+
+/// Show the banner + typed prompt on real I/O.
+fn confirm_include_secrets(findings_high: &[(&PlannedExportItem, &SecretFinding)]) -> bool {
+    confirm_include_secrets_inner(
+        findings_high,
+        &mut std::io::stderr(),
+        &mut std::io::stdin().lock(),
+    )
+}
+
+/// Testable inner implementation: banner → prompt → compare.
+///
+/// Returns `true` only when the user types exactly `I UNDERSTAND` (after
+/// trimming surrounding whitespace).  Any other input, including `EOF`,
+/// returns `false`.
+pub(crate) fn confirm_include_secrets_inner<W, R>(
+    findings_high: &[(&PlannedExportItem, &SecretFinding)],
+    out: &mut W,
+    inp: &mut R,
+) -> bool
+where
+    W: std::io::Write,
+    R: BufRead,
+{
+    let tty = std::io::stdout().is_terminal();
+
+    macro_rules! red {
+        ($s:expr) => {
+            if tty {
+                $s.red().to_string()
+            } else {
+                $s.to_string()
+            }
+        };
+    }
+
+    let _ = writeln!(
+        out,
+        "{}",
+        red!("┌────────────────────────────────────────────────────────────────────┐")
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        red!("│  WARNING: --include-secrets is active                              │")
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        red!("│  The following High-severity findings WILL be included.            │")
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        red!("└────────────────────────────────────────────────────────────────────┘")
+    );
+    let _ = writeln!(out);
+
+    for (item, finding) in findings_high {
+        let path = item
+            .source_canonical
+            .as_deref()
+            .unwrap_or(&item.source)
+            .display()
+            .to_string();
+        let _ = writeln!(
+            out,
+            "  {path}:{}  [{}]  {}",
+            finding.line, finding.rule_id, finding.preview
+        );
+    }
+
+    let _ = writeln!(out);
+    let _ = write!(out, "[type 'I UNDERSTAND' to continue] ");
+    let _ = out.flush();
+
+    let mut line = String::new();
+    if inp.read_line(&mut line).is_err() {
+        return false;
+    }
+    line.trim() == "I UNDERSTAND"
+}
+
+// ── other helpers ──────────────────────────────────────────────────────────────
 
 fn print_plan_summary(plan: &ExportPlan, output_dir: &Path, is_safe: bool) {
     let items_included = plan
@@ -125,13 +228,13 @@ fn print_plan_summary(plan: &ExportPlan, output_dir: &Path, is_safe: bool) {
         .items
         .iter()
         .flat_map(|i| &i.findings)
-        .filter(|f| f.severity == archdots_core::exporter::SecretSeverity::High)
+        .filter(|f| f.severity == SecretSeverity::High)
         .count();
     let findings_medium = plan
         .items
         .iter()
         .flat_map(|i| &i.findings)
-        .filter(|f| f.severity == archdots_core::exporter::SecretSeverity::Medium)
+        .filter(|f| f.severity == SecretSeverity::Medium)
         .count();
 
     eprintln!("Export plan: {} → {}", plan.profile_name, output_dir.display());
@@ -161,9 +264,6 @@ fn print_write_report(report: &ExportReport, output_dir: &Path) {
     eprintln!("  gh repo create --public --source=. --push");
 }
 
-/// Ask the user for the final write confirmation.
-///
-/// Returns `Ok(true)` when confirmed, `Ok(false)` on refusal or non-TTY stdin.
 fn confirm_write() -> Result<bool> {
     if !std::io::stdin().is_terminal() {
         return Ok(false);
@@ -185,7 +285,14 @@ fn confirm_write() -> Result<bool> {
 pub fn run(args: ExportArgs) -> Result<i32> {
     let format: ExportFormat = args.format.into();
 
-    // 1. Load profile.
+    // 1. Reject --include-secrets on non-TTY stdin early (§A.5, §H #12).
+    //    This is checked before anything expensive.
+    if args.include_secrets && !std::io::stdin().is_terminal() {
+        eprintln!("refusing: --include-secrets requires a TTY");
+        return Ok(3);
+    }
+
+    // 2. Load profile.
     let profile_dir = xdg::profiles_dir()?;
     let profile_path = profile_dir.join(format!("{}.toml", args.profile));
     if !profile_path.exists() {
@@ -204,13 +311,13 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         }
     };
 
-    // 2. Resolve output directory (§Q1: ./<profile>-export/ default).
+    // 3. Resolve output directory (§Q1: ./<profile>-export/ default).
     let output_dir = args
         .output
         .clone()
         .unwrap_or_else(|| PathBuf::from(format!("./{}-export", args.profile)));
 
-    // 3. Pre-flight: output_dir must not be a regular file (§H #25).
+    // 4. Pre-flight: output_dir must not be a regular file (§H #25).
     if output_dir.is_file() {
         eprintln!(
             "output path is a regular file: {} (expected a directory)",
@@ -219,7 +326,7 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         return Ok(3);
     }
 
-    // 4. Build ExportOptions (allow_secret_rules filled in Part 4).
+    // 5. Build ExportOptions (allow_secret_rules filled in Part 4).
     let opts = ExportOptions {
         format,
         allow_paths: args.allow_path.clone(),
@@ -231,11 +338,11 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         include_readme: !args.no_readme,
     };
 
-    // 5. Build Exporter.
+    // 6. Build Exporter.
     let home = xdg::home_dir()?;
     let exporter = Exporter::new(&profile, &profile_dir, &home);
 
-    // 6. PLAN.
+    // 7. PLAN.
     let mut plan = match exporter.plan(&opts) {
         Ok(p) => p,
         Err(e) => {
@@ -244,7 +351,7 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         }
     };
 
-    // 7. SCAN (skip entirely for profile-only; §B).
+    // 8. SCAN (skip entirely for profile-only; §B).
     if format == ExportFormat::Full {
         if let Err(e) = exporter.scan(&mut plan) {
             eprintln!("scan error: {e}");
@@ -252,29 +359,45 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         }
     }
 
-    // 8. DECIDE.
+    // 9. --include-secrets I UNDERSTAND gate (non-check mode only; §A.5, #13).
+    //    --yes is orthogonal: it never skips this prompt (#13).
+    if args.include_secrets && !args.check {
+        let high_findings = collect_high_findings(&plan);
+        if !high_findings.is_empty() {
+            tracing::warn!(
+                count = high_findings.len(),
+                "--include-secrets: overriding High-severity findings before export"
+            );
+            if !confirm_include_secrets(&high_findings) {
+                println!("Aborted.");
+                return Ok(1);
+            }
+        }
+    }
+
+    // 10. DECIDE.
     let is_safe = exporter.is_safe_to_write(&plan, &opts);
     let exit_code = if is_safe { 0i32 } else { 2i32 };
 
-    // 9. --check: report and exit, never write (§H #5).
+    // 11. --check: report and exit, never write (§H #5).
     if args.check {
         print_plan_summary(&plan, &output_dir, is_safe);
         return Ok(exit_code);
     }
 
-    // 10. Not safe → blocked (exit 2).
+    // 12. Not safe → blocked (exit 2).
     if !is_safe {
         print_plan_summary(&plan, &output_dir, false);
         return Ok(2);
     }
 
-    // 11. CONFIRM: ask unless --yes (§H #21).
+    // 13. CONFIRM: ask unless --yes (§H #21).
     if !args.yes && !confirm_write()? {
         println!("Aborted.");
         return Ok(1);
     }
 
-    // 12. WRITE.
+    // 14. WRITE.
     let report = match exporter.write(&plan, &output_dir, &opts, args.force) {
         Ok(r) => r,
         Err(ExportError::OutputNotEmpty(_)) => {
@@ -305,7 +428,7 @@ pub fn run(args: ExportArgs) -> Result<i32> {
         }
     };
 
-    // 13. Post-write report + hints (refined in Part 4).
+    // 15. Post-write report + hints (refined in Part 4).
     print_write_report(&report, &output_dir);
     Ok(0)
 }
@@ -317,13 +440,15 @@ mod tests {
     use archdots_core::exporter::{ExportFormat, ExportOptions};
     use clap::Parser;
 
-    use super::{ExportArgs, ExportFormatArg};
+    use super::{ExportArgs, ExportFormatArg, confirm_include_secrets_inner};
 
     #[derive(Debug, Parser)]
     struct TestCli {
         #[command(flatten)]
         args: ExportArgs,
     }
+
+    // ── Part 1: parsing ───────────────────────────────────────────────────────
 
     #[test]
     fn parse_minimal_all_defaults() {
@@ -413,5 +538,49 @@ mod tests {
         };
         assert!(!opts.include_install_script);
         assert!(!opts.include_readme);
+    }
+
+    // ── Part 3: confirm_include_secrets_inner ─────────────────────────────────
+
+    fn run_prompt(input: &str) -> bool {
+        let findings: Vec<_> = vec![];
+        let mut out = Vec::new();
+        let mut inp = std::io::Cursor::new(input.as_bytes());
+        confirm_include_secrets_inner(&findings, &mut out, &mut inp)
+    }
+
+    #[test]
+    fn confirm_exact_i_understand_returns_true() {
+        assert!(run_prompt("I UNDERSTAND\n"));
+    }
+
+    #[test]
+    fn confirm_i_understand_with_surrounding_whitespace_returns_true() {
+        assert!(run_prompt("  I UNDERSTAND  \n"));
+    }
+
+    #[test]
+    fn confirm_lowercase_i_understand_returns_false() {
+        assert!(!run_prompt("i understand\n"));
+    }
+
+    #[test]
+    fn confirm_mixed_case_returns_false() {
+        assert!(!run_prompt("I understand\n"));
+    }
+
+    #[test]
+    fn confirm_yes_returns_false() {
+        assert!(!run_prompt("YES\n"));
+    }
+
+    #[test]
+    fn confirm_empty_returns_false() {
+        assert!(!run_prompt("\n"));
+    }
+
+    #[test]
+    fn confirm_eof_returns_false() {
+        assert!(!run_prompt(""));
     }
 }
