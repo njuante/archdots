@@ -16,8 +16,11 @@ use crate::profile::Profile;
 
 mod glob;
 pub mod scanner;
+pub(crate) mod template;
 
 pub use scanner::SecretScanner;
+
+const README_TEMPLATE: &str = include_str!("../../data/readme_template.md");
 
 // ── public types ──────────────────────────────────────────────────────────────
 
@@ -435,6 +438,123 @@ impl<'a> Exporter<'a> {
         true
     }
 
+    // ── render_readme ─────────────────────────────────────────────────────────
+
+    /// Render the README from profile + plan. Pure (no disk I/O).
+    ///
+    /// # Errors
+    /// Returns [`ExportError::TemplateRender`] when the embedded template has
+    /// an unresolved placeholder (programming bug; should not occur in release).
+    pub fn render_readme(
+        &self,
+        plan: &ExportPlan,
+        archdots_version: &str,
+    ) -> Result<String, ExportError> {
+        use template::{escape_md_block, escape_md_inline, TemplateContext};
+
+        let mut ctx = TemplateContext::new();
+
+        // ── profile metadata ──────────────────────────────────────────────
+        ctx.set_str("profile_name", &self.profile.profile.name);
+        ctx.set_str(
+            "profile_description",
+            escape_md_block(
+                self.profile
+                    .profile
+                    .description
+                    .as_deref()
+                    .unwrap_or("A dotfiles profile generated with archdots."),
+            ),
+        );
+        ctx.set_str(
+            "author",
+            escape_md_inline(self.profile.profile.author.as_deref().unwrap_or("\u{2014}")),
+        );
+
+        let tags_inline = if self.profile.profile.tags.is_empty() {
+            "\u{2014}".to_string()
+        } else {
+            self.profile
+                .profile
+                .tags
+                .iter()
+                .map(|t| format!("`{}`", escape_md_inline(t)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        ctx.set_str("tags_inline", tags_inline);
+        ctx.set_str("wm_kind", wm_kind_str(self.profile.wm.as_ref()));
+        ctx.set_str("generated_date", today_iso());
+        ctx.set_str("archdots_version", archdots_version);
+
+        // ── dependencies ──────────────────────────────────────────────────
+        let pacman = &self.profile.dependencies.pacman;
+        let aur = &self.profile.dependencies.aur;
+        let optional = &self.profile.dependencies.optional_pacman;
+
+        ctx.set_bool("has_pacman", !pacman.is_empty());
+        ctx.set_bool("no_pacman", pacman.is_empty());
+        ctx.set_str("pacman_deps_str", pacman.join(" "));
+
+        ctx.set_bool("has_aur", !aur.is_empty());
+        ctx.set_bool("no_aur", aur.is_empty());
+        ctx.set_str("aur_deps_str", aur.join(" "));
+
+        ctx.set_bool("has_optional", !optional.is_empty());
+        ctx.set_bool("no_optional", optional.is_empty());
+        ctx.set_str("optional_deps_str", optional.join(" "));
+
+        // ── file tables ───────────────────────────────────────────────────
+        // Build an id → entry map for unexpanded target and mode lookup.
+        let entry_map: std::collections::HashMap<&str, &crate::profile::FileEntry> = self
+            .profile
+            .files
+            .iter()
+            .map(|e| (e.id.as_str(), e))
+            .collect();
+
+        let mut included_rows: Vec<String> = Vec::new();
+        let mut excluded_rows: Vec<String> = Vec::new();
+
+        for item in &plan.items {
+            match &item.classification {
+                ItemClassification::Include {} => {
+                    if let (Some(rel), Some(entry)) = (
+                        item.rel_in_repo.as_ref(),
+                        entry_map.get(item.entry_id.as_str()),
+                    ) {
+                        let rel_str = rel.to_string_lossy();
+                        let target_raw = escape_md_inline(&entry.target);
+                        let mode = link_mode_str(entry);
+                        included_rows.push(format!(
+                            "| `{}` | `{}` | {} |",
+                            escape_md_inline(&rel_str),
+                            target_raw,
+                            mode
+                        ));
+                    }
+                }
+                ItemClassification::OutsideHome {}
+                | ItemClassification::MissingSource {}
+                | ItemClassification::ExcludeSensitivePath { .. }
+                | ItemClassification::ExcludeBySize { .. }
+                | ItemClassification::ExcludeBinary {}
+                | ItemClassification::ExcludeBrokenSymlink {}
+                | ItemClassification::ExcludeDirectory {} => {
+                    let target_str = escape_md_inline(&item.target.to_string_lossy());
+                    let reason = exclusion_reason_str(&item.classification);
+                    excluded_rows.push(format!("| `{target_str}` | {reason} |"));
+                }
+            }
+        }
+
+        ctx.set_list("files_included", included_rows);
+        ctx.set_bool("has_excluded", !excluded_rows.is_empty());
+        ctx.set_list("files_excluded", excluded_rows);
+
+        template::render(README_TEMPLATE, &ctx)
+    }
+
     // ── private helpers ───────────────────────────────────────────────────────
 
     #[allow(clippy::too_many_lines)]
@@ -673,6 +793,58 @@ impl<'a> Exporter<'a> {
         }
         None
     }
+}
+
+// ── module-level helpers ──────────────────────────────────────────────────────
+
+fn wm_kind_str(wm: Option<&crate::profile::WmSpec>) -> String {
+    match wm.map(|w| &w.kind) {
+        Some(crate::profile::WmKind::Bspwm) => "bspwm".to_string(),
+        Some(crate::profile::WmKind::Hyprland) => "hyprland".to_string(),
+        Some(crate::profile::WmKind::I3) => "i3".to_string(),
+        Some(crate::profile::WmKind::Sway) => "sway".to_string(),
+        None | Some(_) => "\u{2014}".to_string(),
+    }
+}
+
+fn link_mode_str(entry: &crate::profile::FileEntry) -> &'static str {
+    use crate::profile::LinkMode;
+    match entry.mode {
+        LinkMode::Symlink if entry.exec => "symlink +x",
+        LinkMode::Symlink => "symlink",
+        LinkMode::Copy if entry.exec => "copy +x",
+        LinkMode::Copy => "copy",
+        LinkMode::Template => "template",
+    }
+}
+
+fn exclusion_reason_str(c: &ItemClassification) -> String {
+    match c {
+        ItemClassification::ExcludeSensitivePath { rule_id, kind } => {
+            let k = match kind {
+                SensitivePathKind::Prefix => "prefix",
+                SensitivePathKind::Exact => "exact",
+                SensitivePathKind::Suffix => "suffix",
+            };
+            format!("sensitive path ({k}: `{rule_id}`)")
+        }
+        ItemClassification::ExcludeBySize {
+            size_bytes,
+            limit_bytes,
+        } => format!("file too large ({size_bytes} B > {limit_bytes} B limit)"),
+        ItemClassification::ExcludeBinary {} => "binary file".to_string(),
+        ItemClassification::ExcludeBrokenSymlink {} => "broken symlink".to_string(),
+        ItemClassification::ExcludeDirectory {} => "source is a directory".to_string(),
+        ItemClassification::MissingSource {} => "source file not found".to_string(),
+        ItemClassification::OutsideHome {} => "target is outside \\$HOME".to_string(),
+        _ => "excluded".to_string(),
+    }
+}
+
+fn today_iso() -> String {
+    use time::OffsetDateTime;
+    let d = OffsetDateTime::now_utc().date();
+    format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day())
 }
 
 // ── private fs helpers ────────────────────────────────────────────────────────
@@ -1567,5 +1739,196 @@ mod tests {
             "expected ExcludeSensitivePath(Suffix) for .pem file; got {:?}",
             plan.items[0].classification
         );
+    }
+
+    // ── render_readme tests ───────────────────────────────────────────────────
+
+    fn make_full_profile() -> crate::profile::Profile {
+        use crate::profile::{Dependencies, WmKind, WmSpec};
+        let mut p = make_profile("my-rice", vec![]);
+        p.profile.description = Some("My hyprland rice.".to_string());
+        p.profile.author = Some("alice".to_string());
+        p.profile.tags = vec!["hyprland".to_string(), "dark".to_string()];
+        p.wm = Some(WmSpec {
+            kind: WmKind::Hyprland,
+            version: None,
+        });
+        p.dependencies = Dependencies {
+            pacman: vec!["hyprland".to_string(), "waybar".to_string()],
+            aur: vec!["paru".to_string()],
+            optional_pacman: vec!["grim".to_string()],
+        };
+        p
+    }
+
+    #[test]
+    fn render_readme_full_profile_has_all_sections() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        write_file(&profile_dir, "zshrc", b"# zsh config\n");
+
+        let target = format!("{}/.zshrc", home.display());
+        let entry = make_entry("zshrc", "zshrc", &target);
+        let mut profile = make_full_profile();
+        profile.files = vec![entry];
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        let readme = exp.render_readme(&plan, "0.5.0").unwrap();
+
+        assert!(
+            readme.contains("## Dependencies"),
+            "must have Dependencies section"
+        );
+        assert!(readme.contains("hyprland"), "pacman deps must appear");
+        assert!(readme.contains("paru"), "aur deps must appear");
+        assert!(
+            readme.contains("## Files included"),
+            "must have files section"
+        );
+        assert!(
+            readme.contains("dotfiles/.zshrc"),
+            "included file path must appear"
+        );
+        assert!(
+            readme.contains("## Installation"),
+            "must have Installation section"
+        );
+        assert!(readme.contains("v0.5.0"), "version must appear");
+        // Author and tags
+        assert!(readme.contains("alice"), "author must appear");
+        assert!(readme.contains("`hyprland`"), "tag must appear");
+    }
+
+    #[test]
+    fn render_readme_no_deps_shows_none_declared() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        let profile = make_profile("empty-rice", vec![]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        let readme = exp.render_readme(&plan, "0.5.0").unwrap();
+
+        assert!(
+            readme.contains("_None declared._"),
+            "no deps → must show 'None declared.'"
+        );
+        // Must NOT have empty pacman install command
+        assert!(
+            !readme.contains("sudo pacman -S \n"),
+            "must not emit empty pacman line"
+        );
+    }
+
+    #[test]
+    fn render_readme_no_exclusions_omits_excluded_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        write_file(&profile_dir, "hypr.conf", b"monitor=,preferred,auto,1\n");
+        let target = format!("{}/.config/hypr/hyprland.conf", home.display());
+        let entry = make_entry("hypr", "hypr.conf", &target);
+        let profile = make_profile("clean-rice", vec![entry]);
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        let readme = exp.render_readme(&plan, "0.5.0").unwrap();
+
+        assert!(
+            !readme.contains("## Files excluded"),
+            "no exclusions → section must be omitted"
+        );
+    }
+
+    #[test]
+    fn render_readme_has_exclusions_shows_excluded_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        write_file(&profile_dir, "id_rsa", b"-----BEGIN RSA PRIVATE KEY-----\n");
+        let target = format!("{}/.ssh/id_rsa", home.display());
+        let entry = make_entry("key", "id_rsa", &target);
+        let profile = make_profile("sec-rice", vec![entry]);
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        let readme = exp.render_readme(&plan, "0.5.0").unwrap();
+
+        assert!(
+            readme.contains("## Files excluded"),
+            "sensitive path exclusion → section must appear"
+        );
+    }
+
+    #[test]
+    fn render_readme_version_and_date_in_footer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        let profile = make_profile("footer-test", vec![]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        let readme = exp.render_readme(&plan, "1.2.3").unwrap();
+
+        assert!(readme.contains("v1.2.3"), "version must be in footer");
+        // Date is present somewhere (format YYYY-MM-DD)
+        let has_date = readme.lines().any(|l| {
+            l.len() >= 10
+                && l.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && l.chars().nth(4) == Some('-')
+        }) || readme.contains("2026")
+            || readme.contains("202");
+        assert!(has_date, "date must appear in README");
+    }
+
+    #[test]
+    fn render_readme_description_injection_prevented() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        let mut profile = make_profile("test", vec![]);
+        profile.profile.description = Some("# pwned\n## injected".to_string());
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        let readme = exp.render_readme(&plan, "0.5.0").unwrap();
+
+        // Must not contain unescaped headings from user description
+        for line in readme.lines() {
+            if line == "# my-rice"
+                || line.starts_with("## ")
+                    && !line.contains("Dependencies")
+                    && !line.contains("Screenshots")
+                    && !line.contains("Files")
+                    && !line.contains("Installation")
+                    && !line.contains("How this")
+                    && !line.contains("Adding screenshots")
+            {
+                continue; // These are legitimate headings from the template
+            }
+            assert!(
+                !line.trim_start().starts_with("# pwned"),
+                "heading injection must be blocked; got: {line:?}"
+            );
+        }
     }
 }
