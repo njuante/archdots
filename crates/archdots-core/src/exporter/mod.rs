@@ -21,6 +21,8 @@ pub(crate) mod template;
 pub use scanner::SecretScanner;
 
 const README_TEMPLATE: &str = include_str!("../../data/readme_template.md");
+const INSTALL_TEMPLATE: &str = include_str!("../../data/install_template.sh");
+const GITIGNORE_TEMPLATE: &str = include_str!("../../data/gitignore_template");
 
 // ── public types ──────────────────────────────────────────────────────────────
 
@@ -555,6 +557,271 @@ impl<'a> Exporter<'a> {
         template::render(README_TEMPLATE, &ctx)
     }
 
+    // ── write ─────────────────────────────────────────────────────────────────
+
+    /// Materialise the plan to `output_dir` using atomic staging + rename.
+    ///
+    /// # Errors
+    /// - [`ExportError::Unsafe`] when `is_safe_to_write` returns false.
+    /// - [`ExportError::OutputNotEmpty`] if directory is non-empty without `force`.
+    /// - [`ExportError::InvalidOptions`] if `output_dir` overlaps source paths.
+    /// - [`ExportError::Io`] on any filesystem error.
+    pub fn write(
+        &self,
+        plan: &ExportPlan,
+        output_dir: &Path,
+        opts: &ExportOptions,
+        force: bool,
+    ) -> Result<ExportReport, ExportError> {
+        // 0. Safety gate.
+        if !self.is_safe_to_write(plan, opts) {
+            return Err(ExportError::Unsafe);
+        }
+
+        // 1. Pre-flight checks.
+        if output_dir.is_file() {
+            return Err(ExportError::Io {
+                path: output_dir.to_path_buf(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "output path is a regular file, not a directory",
+                ),
+            });
+        }
+
+        let parent = output_dir.parent().ok_or_else(|| ExportError::Io {
+            path: output_dir.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "output directory has no parent",
+            ),
+        })?;
+        if !parent.exists() {
+            return Err(ExportError::Io {
+                path: parent.to_path_buf(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "parent directory does not exist",
+                ),
+            });
+        }
+
+        if output_dir.is_dir() && !force && dir_is_nonempty(output_dir)? {
+            return Err(ExportError::OutputNotEmpty(output_dir.to_path_buf()));
+        }
+
+        // Check for overlap between output_dir and profile source paths.
+        if let Ok(canon_out) = output_dir.canonicalize() {
+            for item in &plan.items {
+                if let Some(canon_src) = &item.source_canonical {
+                    if canon_src.starts_with(&canon_out) {
+                        return Err(ExportError::InvalidOptions(
+                            "output directory overlaps with profile source paths".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 2. Create staging dir (sibling of output_dir).
+        let staging = make_staging_dir(parent)?;
+
+        // 3. Populate + finalize (cleanup staging on any error).
+        let result = self.populate_staging(&staging, plan, opts);
+        if let Err(e) = result {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+
+        let result = finalize_staging(&staging, output_dir);
+        if let Err(e) = result {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+
+        // 4. Build report.
+        Ok(build_report(output_dir, plan))
+    }
+
+    fn populate_staging(
+        &self,
+        staging: &Path,
+        plan: &ExportPlan,
+        opts: &ExportOptions,
+    ) -> Result<(), ExportError> {
+        let version = env!("CARGO_PKG_VERSION");
+
+        // README.md
+        if opts.include_readme {
+            let readme = self.render_readme(plan, version)?;
+            write_file_sync(staging, "README.md", readme.as_bytes())?;
+        }
+
+        // archdots-profile.toml
+        let exported_profile = self.build_exported_profile(plan, opts);
+        let toml_str = toml::to_string_pretty(&exported_profile).map_err(|e| {
+            ExportError::TemplateRender(format!("failed to serialize profile: {e}"))
+        })?;
+        write_file_sync(staging, "archdots-profile.toml", toml_str.as_bytes())?;
+
+        if matches!(opts.format, ExportFormat::Full) {
+            // install.sh
+            if opts.include_install_script {
+                let install_sh = self.render_install_sh(plan)?;
+                write_file_sync_exec(staging, "install.sh", install_sh.as_bytes())?;
+            }
+
+            // .gitignore
+            write_file_sync(staging, ".gitignore", GITIGNORE_TEMPLATE.as_bytes())?;
+
+            // dotfiles/<rel>
+            self.copy_dotfiles(staging, plan)?;
+        }
+
+        // fsync the staging directory itself.
+        fsync_dir(staging).map_err(|e| ExportError::Io {
+            path: staging.to_path_buf(),
+            source: e,
+        })?;
+
+        Ok(())
+    }
+
+    fn render_install_sh(&self, _plan: &ExportPlan) -> Result<String, ExportError> {
+        use template::TemplateContext;
+        let mut ctx = TemplateContext::new();
+        let pacman = &self.profile.dependencies.pacman;
+        let aur = &self.profile.dependencies.aur;
+        ctx.set_bool("has_pacman", !pacman.is_empty());
+        ctx.set_str("pacman_deps_str", pacman.join(" "));
+        ctx.set_bool("has_aur", !aur.is_empty());
+        ctx.set_str("aur_deps_str", aur.join(" "));
+        template::render(INSTALL_TEMPLATE, &ctx)
+    }
+
+    fn build_exported_profile(
+        &self,
+        plan: &ExportPlan,
+        opts: &ExportOptions,
+    ) -> crate::profile::Profile {
+        use crate::profile::{FileEntry, Profile};
+        let mut profile = self.profile.clone();
+
+        if matches!(opts.format, ExportFormat::Full) {
+            // Keep only Include items; rewrite source to dotfiles/<rel>.
+            let rel_map: std::collections::HashMap<&str, &std::path::PathBuf> = plan
+                .items
+                .iter()
+                .filter(|i| matches!(i.classification, ItemClassification::Include {}))
+                .filter_map(|i| i.rel_in_repo.as_ref().map(|r| (i.entry_id.as_str(), r)))
+                .collect();
+
+            let new_files: Vec<FileEntry> = profile
+                .files
+                .iter()
+                .filter(|e| rel_map.contains_key(e.id.as_str()))
+                .map(|e| {
+                    let mut ne = e.clone();
+                    if let Some(rel) = rel_map.get(e.id.as_str()) {
+                        ne.source.clone_from(*rel);
+                    }
+                    ne
+                })
+                .collect();
+
+            profile.files = new_files;
+        }
+        // ProfileOnly: keep all files with original sources.
+        Profile {
+            schema_version: profile.schema_version,
+            profile: profile.profile,
+            wm: profile.wm,
+            files: profile.files,
+            dependencies: profile.dependencies,
+            hooks: profile.hooks,
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn copy_dotfiles(&self, staging: &Path, plan: &ExportPlan) -> Result<(), ExportError> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // Build id → exec flag map for the profile entries.
+        let exec_map: std::collections::HashMap<&str, bool> = self
+            .profile
+            .files
+            .iter()
+            .map(|e| (e.id.as_str(), e.exec))
+            .collect();
+
+        for item in &plan.items {
+            if !matches!(item.classification, ItemClassification::Include {}) {
+                continue;
+            }
+            let (Some(rel), Some(canon)) =
+                (item.rel_in_repo.as_ref(), item.source_canonical.as_ref())
+            else {
+                continue;
+            };
+
+            let dst = staging.join(rel);
+            if let Some(p) = dst.parent() {
+                std::fs::create_dir_all(p).map_err(|e| ExportError::Io {
+                    path: p.to_path_buf(),
+                    source: e,
+                })?;
+            }
+
+            // Re-canonicalize at copy time to defend against TOCTOU.
+            let real_src = std::fs::canonicalize(canon).map_err(|e| ExportError::Io {
+                path: canon.clone(),
+                source: e,
+            })?;
+
+            std::fs::copy(&real_src, &dst).map_err(|e| ExportError::Io {
+                path: dst.clone(),
+                source: e,
+            })?;
+
+            // Preserve executable bit from source; also apply exec flag.
+            let src_mode = std::fs::metadata(&real_src)
+                .map_err(|e| ExportError::Io {
+                    path: real_src.clone(),
+                    source: e,
+                })?
+                .permissions()
+                .mode();
+            let force_exec = exec_map
+                .get(item.entry_id.as_str())
+                .copied()
+                .unwrap_or(false);
+            if src_mode & 0o111 != 0 || force_exec {
+                let mut perms = std::fs::metadata(&dst)
+                    .map_err(|e| ExportError::Io {
+                        path: dst.clone(),
+                        source: e,
+                    })?
+                    .permissions();
+                perms.set_mode(perms.mode() | 0o111);
+                std::fs::set_permissions(&dst, perms).map_err(|e| ExportError::Io {
+                    path: dst.clone(),
+                    source: e,
+                })?;
+            }
+
+            // fsync the destination file.
+            let f = std::fs::File::open(&dst).map_err(|e| ExportError::Io {
+                path: dst.clone(),
+                source: e,
+            })?;
+            f.sync_all().map_err(|e| ExportError::Io {
+                path: dst.clone(),
+                source: e,
+            })?;
+        }
+        Ok(())
+    }
+
     // ── private helpers ───────────────────────────────────────────────────────
 
     #[allow(clippy::too_many_lines)]
@@ -847,6 +1114,168 @@ fn today_iso() -> String {
     format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day())
 }
 
+fn dir_is_nonempty(dir: &Path) -> Result<bool, ExportError> {
+    let mut rd = std::fs::read_dir(dir).map_err(|e| ExportError::Io {
+        path: dir.to_path_buf(),
+        source: e,
+    })?;
+    Ok(rd.next().is_some())
+}
+
+fn make_staging_dir(parent: &Path) -> Result<PathBuf, ExportError> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let staging = parent.join(format!(".archdots-export.tmp.{pid}.{nonce:x}"));
+    std::fs::create_dir(&staging).map_err(|e| ExportError::Io {
+        path: staging.clone(),
+        source: e,
+    })?;
+    Ok(staging)
+}
+
+fn write_file_sync(dir: &Path, name: &str, content: &[u8]) -> Result<(), ExportError> {
+    use std::io::Write as _;
+    let path = dir.join(name);
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| ExportError::Io {
+            path: p.to_path_buf(),
+            source: e,
+        })?;
+    }
+    let mut f = std::fs::File::create(&path).map_err(|e| ExportError::Io {
+        path: path.clone(),
+        source: e,
+    })?;
+    f.write_all(content).map_err(|e| ExportError::Io {
+        path: path.clone(),
+        source: e,
+    })?;
+    f.sync_all().map_err(|e| ExportError::Io {
+        path: path.clone(),
+        source: e,
+    })?;
+    Ok(())
+}
+
+fn write_file_sync_exec(dir: &Path, name: &str, content: &[u8]) -> Result<(), ExportError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    write_file_sync(dir, name, content)?;
+    let path = dir.join(name);
+    let mut perms = std::fs::metadata(&path)
+        .map_err(|e| ExportError::Io {
+            path: path.clone(),
+            source: e,
+        })?
+        .permissions();
+    perms.set_mode(perms.mode() | 0o111);
+    std::fs::set_permissions(&path, perms).map_err(|e| ExportError::Io {
+        path: path.clone(),
+        source: e,
+    })?;
+    Ok(())
+}
+
+fn fsync_dir(dir: &Path) -> std::io::Result<()> {
+    let f = std::fs::File::open(dir)?;
+    f.sync_all()
+}
+
+/// Atomic finalisation: rename staging → `output_dir` if `output_dir` doesn't
+/// exist; otherwise merge file-by-file (`output_dir` existed with force=true).
+fn finalize_staging(staging: &Path, output_dir: &Path) -> Result<(), ExportError> {
+    if output_dir.exists() {
+        // output_dir exists (force=true path): merge staging into it.
+        merge_dir_into(staging, output_dir)?;
+        let _ = std::fs::remove_dir_all(staging);
+        // fsync output_dir after merge.
+        fsync_dir(output_dir).map_err(|e| ExportError::Io {
+            path: output_dir.to_path_buf(),
+            source: e,
+        })?;
+    } else {
+        std::fs::rename(staging, output_dir).map_err(|e| ExportError::Io {
+            path: output_dir.to_path_buf(),
+            source: e,
+        })?;
+    }
+    Ok(())
+}
+
+fn merge_dir_into(src: &Path, dst: &Path) -> Result<(), ExportError> {
+    for entry in std::fs::read_dir(src).map_err(|e| ExportError::Io {
+        path: src.to_path_buf(),
+        source: e,
+    })? {
+        let entry = entry.map_err(|e| ExportError::Io {
+            path: src.to_path_buf(),
+            source: e,
+        })?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if src_path.is_dir() {
+            std::fs::create_dir_all(&dst_path).map_err(|e| ExportError::Io {
+                path: dst_path.clone(),
+                source: e,
+            })?;
+            merge_dir_into(&src_path, &dst_path)?;
+        } else {
+            std::fs::rename(&src_path, &dst_path).map_err(|e| ExportError::Io {
+                path: dst_path.clone(),
+                source: e,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn build_report(output_dir: &Path, plan: &ExportPlan) -> ExportReport {
+    let mut report = ExportReport {
+        output_dir: output_dir.to_path_buf(),
+        items_included: 0,
+        items_excluded_by_path: 0,
+        items_excluded_by_size: 0,
+        items_excluded_binary: 0,
+        items_missing: 0,
+        findings_high: 0,
+        findings_medium: 0,
+        findings_overridden: 0,
+        bytes_written: 0,
+    };
+    for item in &plan.items {
+        match &item.classification {
+            ItemClassification::Include {} => {
+                report.items_included += 1;
+                report.bytes_written += item.size_bytes.unwrap_or(0);
+                for f in &item.findings {
+                    match f.severity {
+                        SecretSeverity::High => report.findings_high += 1,
+                        SecretSeverity::Medium => report.findings_medium += 1,
+                    }
+                }
+            }
+            ItemClassification::ExcludeSensitivePath { .. } => {
+                report.items_excluded_by_path += 1;
+            }
+            ItemClassification::ExcludeBySize { .. } => {
+                report.items_excluded_by_size += 1;
+            }
+            ItemClassification::ExcludeBinary {} => {
+                report.items_excluded_binary += 1;
+            }
+            ItemClassification::MissingSource {} => {
+                report.items_missing += 1;
+            }
+            _ => {}
+        }
+    }
+    report
+}
+
 // ── private fs helpers ────────────────────────────────────────────────────────
 
 fn read_first_bytes(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
@@ -883,8 +1312,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        ExportOptions, Exporter, ItemClassification, PlannedExportItem, SecretAllowance,
-        SecretFinding, SecretSeverity, SensitivePathKind,
+        ExportFormat, ExportOptions, Exporter, ItemClassification, PlannedExportItem,
+        SecretAllowance, SecretFinding, SecretSeverity, SensitivePathKind,
     };
     use crate::profile::{Dependencies, FileEntry, Hooks, LinkMode, Profile, ProfileMeta};
 
@@ -1930,5 +2359,317 @@ mod tests {
                 "heading injection must be blocked; got: {line:?}"
             );
         }
+    }
+
+    // ── write integration tests ───────────────────────────────────────────────
+
+    fn setup_write_test() -> (
+        tempfile::TempDir,
+        PathBuf,
+        PathBuf,
+        crate::profile::Profile,
+        crate::profile::FileEntry,
+    ) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        write_file(&profile_dir, "zshrc", b"# zsh\nexport PATH=$PATH:~/bin\n");
+
+        let target = format!("{}/.zshrc", home.display());
+        let entry = make_entry("zshrc", "zshrc", &target);
+        let profile = make_profile("test-rice", vec![entry.clone()]);
+        (tmp, home, profile_dir, profile, entry)
+    }
+
+    #[test]
+    fn write_happy_path_full_creates_expected_files() {
+        let (tmp, home, profile_dir, profile, _) = setup_write_test();
+        let output_dir = tmp.path().join("out");
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        let report = exp
+            .write(&plan, &output_dir, &ExportOptions::default(), false)
+            .unwrap();
+
+        assert!(
+            output_dir.join("README.md").exists(),
+            "README.md must exist"
+        );
+        assert!(
+            output_dir.join("archdots-profile.toml").exists(),
+            "profile.toml must exist"
+        );
+        assert!(
+            output_dir.join("install.sh").exists(),
+            "install.sh must exist"
+        );
+        assert!(
+            output_dir.join(".gitignore").exists(),
+            ".gitignore must exist"
+        );
+        assert!(
+            output_dir.join("dotfiles/.zshrc").exists(),
+            "dotfiles/.zshrc must exist"
+        );
+        assert_eq!(report.items_included, 1);
+
+        // Verify no staging dir left behind
+        let orphans: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains("archdots-export.tmp")
+            })
+            .collect();
+        assert!(orphans.is_empty(), "no staging dir must be left behind");
+    }
+
+    #[test]
+    fn write_full_profile_toml_has_rewritten_sources() {
+        let (tmp, home, profile_dir, profile, _) = setup_write_test();
+        let output_dir = tmp.path().join("out");
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        exp.write(&plan, &output_dir, &ExportOptions::default(), false)
+            .unwrap();
+
+        let toml_path = output_dir.join("archdots-profile.toml");
+        let content = std::fs::read_to_string(&toml_path).unwrap();
+        let parsed: crate::profile::Profile = toml::from_str(&content).unwrap();
+
+        assert_eq!(parsed.files.len(), 1, "exported profile must have 1 entry");
+        let src = &parsed.files[0].source;
+        assert!(
+            src.starts_with("dotfiles"),
+            "exported source must start with dotfiles/; got {src:?}"
+        );
+    }
+
+    #[test]
+    fn write_profile_only_skips_dotfiles_and_install() {
+        let (tmp, home, profile_dir, profile, _) = setup_write_test();
+        let output_dir = tmp.path().join("out");
+
+        let opts = ExportOptions {
+            format: ExportFormat::ProfileOnly,
+            ..ExportOptions::default()
+        };
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&opts).unwrap();
+        exp.write(&plan, &output_dir, &opts, false).unwrap();
+
+        assert!(
+            output_dir.join("README.md").exists(),
+            "README.md must exist"
+        );
+        assert!(
+            output_dir.join("archdots-profile.toml").exists(),
+            "profile.toml must exist"
+        );
+        assert!(
+            !output_dir.join("dotfiles").exists(),
+            "dotfiles/ must NOT exist in profile-only"
+        );
+        assert!(
+            !output_dir.join("install.sh").exists(),
+            "install.sh must NOT exist in profile-only"
+        );
+    }
+
+    #[test]
+    fn write_nonempty_dir_without_force_returns_error() {
+        let (tmp, home, profile_dir, profile, _) = setup_write_test();
+        let output_dir = tmp.path().join("out");
+        std::fs::create_dir_all(&output_dir).unwrap();
+        write_file(&output_dir, "existing.txt", b"hello\n");
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        let result = exp.write(&plan, &output_dir, &ExportOptions::default(), false);
+
+        assert!(
+            matches!(result, Err(crate::error::ExportError::OutputNotEmpty(_))),
+            "non-empty dir without force must return OutputNotEmpty; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn write_nonempty_dir_with_force_succeeds_no_orphan() {
+        let (tmp, home, profile_dir, profile, _) = setup_write_test();
+        let output_dir = tmp.path().join("out");
+        std::fs::create_dir_all(&output_dir).unwrap();
+        write_file(&output_dir, "existing.txt", b"hello\n");
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        exp.write(&plan, &output_dir, &ExportOptions::default(), true)
+            .unwrap();
+
+        // Existing unrelated file preserved
+        assert!(
+            output_dir.join("existing.txt").exists(),
+            "pre-existing file must be preserved with force"
+        );
+        assert!(
+            output_dir.join("README.md").exists(),
+            "README.md must be written"
+        );
+
+        // No orphan staging dir
+        let orphans: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains("archdots-export.tmp")
+            })
+            .collect();
+        assert!(orphans.is_empty(), "no orphan staging dir");
+    }
+
+    #[test]
+    fn write_unsafe_plan_returns_unsafe_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("p");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        write_file(&profile_dir, "z", b"export KEY=AKIAIOSFODNN7EXAMPLE\n");
+        let target = format!("{}/.zshrc", home.display());
+        let entry = make_entry("z", "z", &target);
+        let profile = make_profile("sec", vec![entry]);
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let mut plan = exp.plan(&ExportOptions::default()).unwrap();
+        exp.scan(&mut plan).unwrap();
+
+        let output_dir = tmp.path().join("out");
+        let result = exp.write(&plan, &output_dir, &ExportOptions::default(), false);
+        assert!(
+            matches!(result, Err(crate::error::ExportError::Unsafe)),
+            "plan with High finding must return Unsafe; got {result:?}"
+        );
+        assert!(
+            !output_dir.exists(),
+            "output dir must not be created on Unsafe error"
+        );
+    }
+
+    #[test]
+    fn write_executable_bit_preserved() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        let script = profile_dir.join("script.sh");
+        std::fs::write(&script, b"#!/bin/sh\necho hi\n").unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(perms.mode() | 0o111);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let target = format!("{}/.local/bin/script.sh", home.display());
+        let entry = make_entry("script", "script.sh", &target);
+        let profile = make_profile("test", vec![entry]);
+        let output_dir = tmp.path().join("out");
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        exp.write(&plan, &output_dir, &ExportOptions::default(), false)
+            .unwrap();
+
+        let dst = output_dir.join("dotfiles/.local/bin/script.sh");
+        let mode = std::fs::metadata(&dst).unwrap().permissions().mode();
+        assert!(mode & 0o111 != 0, "executable bit must be preserved");
+    }
+
+    #[test]
+    fn write_symlink_source_is_copied_as_regular_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        let real_dir = tmp.path().join("real");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        let real = write_file(&real_dir, "zshrc", b"# real zshrc\n");
+        let link = profile_dir.join("zshrc");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let target = format!("{}/.zshrc", home.display());
+        let entry = make_entry("zshrc", "zshrc", &target);
+        let profile = make_profile("test", vec![entry]);
+        let output_dir = tmp.path().join("out");
+
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        exp.write(&plan, &output_dir, &ExportOptions::default(), false)
+            .unwrap();
+
+        let dst = output_dir.join("dotfiles/.zshrc");
+        assert!(dst.exists(), "dotfiles/.zshrc must exist");
+        assert!(
+            !dst.is_symlink(),
+            "output file must be a regular file, not a symlink"
+        );
+        let content = std::fs::read_to_string(&dst).unwrap();
+        assert_eq!(content, "# real zshrc\n");
+    }
+
+    #[test]
+    fn write_output_dir_is_regular_file_returns_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        // Create a regular file where output_dir should go
+        let output_dir = tmp.path().join("out.txt");
+        std::fs::write(&output_dir, b"i am a file\n").unwrap();
+
+        let profile = make_profile("test", vec![]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        let result = exp.write(&plan, &output_dir, &ExportOptions::default(), false);
+
+        assert!(
+            matches!(result, Err(crate::error::ExportError::Io { .. })),
+            "output path being a regular file must return Io error"
+        );
+    }
+
+    #[test]
+    fn write_parent_missing_returns_io_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let profile_dir = tmp.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+
+        // Parent dir doesn't exist
+        let output_dir = tmp.path().join("nonexistent-parent").join("out");
+
+        let profile = make_profile("test", vec![]);
+        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let plan = exp.plan(&ExportOptions::default()).unwrap();
+        let result = exp.write(&plan, &output_dir, &ExportOptions::default(), false);
+
+        assert!(
+            matches!(result, Err(crate::error::ExportError::Io { .. })),
+            "missing parent must return Io error; got {result:?}"
+        );
     }
 }
