@@ -211,7 +211,7 @@ fn run_check(
         strict: false,
         deep,
     };
-    Ok(validator.validate(&p, &paths.profiles_dir, opts)?)
+    Ok(validator.validate(&p, opts)?)
 }
 
 /// Route an `anyhow::Error` into the correct `TaskResult` variant for `kind`.

@@ -6,7 +6,7 @@
 //!
 //! # Storage model
 //!
-//! * [`FileEntry::source`] is always **relative to the profile directory**.
+//! * [`FileEntry::source`] is always **relative to `$HOME`**.
 //!   Call [`Profile::resolve_source`] at apply time to obtain an absolute path.
 //! * [`FileEntry::target`] is stored **unexpanded** (may contain `~` or
 //!   `$VAR`/`${VAR}`).  Call [`Profile::resolve_target`] with a [`ResolveCtx`]
@@ -387,35 +387,37 @@ impl Profile {
     /// Yields `(entry, absolute_source, absolute_target)` for each entry.
     /// Stops and returns the first error if any entry fails to resolve.
     ///
+    /// `home` is the user's `$HOME`; `source` values are relative to it.
+    ///
     /// # Errors
     ///
     /// * Any error returned by [`Profile::resolve_source`] or
     ///   [`Profile::resolve_target`].
     pub fn resolved_entries<'a>(
         &'a self,
-        profile_dir: &'a Path,
+        home: &'a Path,
         ctx: &'a ResolveCtx<'a>,
     ) -> impl Iterator<Item = Result<(&'a FileEntry, PathBuf, PathBuf), ProfileError>> + 'a {
         self.files.iter().map(move |entry| {
-            let src = Self::resolve_source(entry, profile_dir)?;
+            let src = Self::resolve_source(entry, home)?;
             let tgt = Self::resolve_target(entry, ctx)?;
             Ok((entry, src, tgt))
         })
     }
 
-    /// Resolve `entry.source` (relative to `profile_dir`) to an absolute path.
+    /// Resolve `entry.source` (relative to `$HOME`) to an absolute path.
     ///
-    /// The path is computed lexically; the target file does not need to exist.
+    /// The path is computed lexically; the source file does not need to exist.
     ///
     /// # Errors
     ///
-    /// * [`ProfileError::SourceEscape`] — the source path escapes
-    ///   `profile_dir` via `..` components or is absolute.
-    pub fn resolve_source(entry: &FileEntry, profile_dir: &Path) -> Result<PathBuf, ProfileError> {
+    /// * [`ProfileError::SourceEscape`] — the source path escapes `$HOME`
+    ///   via `..` components or is absolute.
+    pub fn resolve_source(entry: &FileEntry, home: &Path) -> Result<PathBuf, ProfileError> {
         if path_escapes_root(&entry.source) {
             return Err(ProfileError::SourceEscape(entry.source.clone()));
         }
-        Ok(profile_dir.join(&entry.source))
+        Ok(home.join(&entry.source))
     }
 }
 

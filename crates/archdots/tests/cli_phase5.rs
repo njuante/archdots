@@ -40,10 +40,10 @@ impl TestEnv {
         let dir = self.profiles_dir();
         std::fs::create_dir_all(&dir).unwrap();
 
-        // Source file: a harmless shell config.
+        // Source file lives in $HOME (source values are relative to $HOME).
         let source_name = format!("{name}-zshrc");
         std::fs::write(
-            dir.join(&source_name),
+            self.home.path().join(&source_name),
             "# .zshrc — no secrets\nexport PATH=\"$HOME/bin:$PATH\"\n",
         )
         .unwrap();
@@ -76,7 +76,7 @@ target = "~/.zshrc"
         let source_name = format!("{name}-env");
         // AKIAIOSFODNN7EXAMPLE matches AKIA[0-9A-Z]{16}.
         std::fs::write(
-            dir.join(&source_name),
+            self.home.path().join(&source_name),
             "# env\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n",
         )
         .unwrap();
@@ -109,7 +109,7 @@ target = "~/.env"
 
         let source_name = format!("{name}-sshconfig");
         std::fs::write(
-            dir.join(&source_name),
+            self.home.path().join(&source_name),
             "# ssh config — no secrets in content\nHost *\n  ServerAliveInterval 60\n",
         )
         .unwrap();
