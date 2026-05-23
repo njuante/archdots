@@ -2,8 +2,12 @@
 //!
 //! These tests exercise the full binary so they catch bugs in the interaction
 //! between subcommands that unit tests (which build fixtures manually) miss.
-//! Specifically, they guard against COR-01: `init` writes `source` relative to
-//! `$HOME`, and all other subcommands must resolve it the same way.
+//!
+//! Originally written to guard COR-01 (the v0.5.1 CircularSymlink incident).
+//! From v0.6.0 onward, `init` copies dotfiles into a managed staging
+//! directory under `$XDG_DATA_HOME` and writes `[paths] source_root` into the
+//! profile, so init → apply now succeeds cleanly and produces real symlinks
+//! back into `$HOME`.
 
 use assert_cmd::Command;
 use tempfile::TempDir;
@@ -43,22 +47,15 @@ impl TestEnv {
 
 // ── init → apply ──────────────────────────────────────────────────────────────
 
-/// `archdots init` then `archdots apply` must not produce a self-symlink.
-///
-/// Before COR-01 was fixed, `apply` resolved `source` (relative to `$HOME`)
-/// against `$HOME` correctly, but `init` produced profiles whose `source` field
-/// was also relative to `$HOME`. The ELOOP bug happened when the same absolute
-/// path ended up as both source and target — e.g. `~/.bashrc → ~/.bashrc`.
+/// `archdots init` then `archdots apply` must succeed and produce a real
+/// symlink from `$HOME` into the managed staging directory.
 #[test]
-fn init_then_apply_does_not_create_circular_symlink() {
+fn init_then_apply_links_to_managed_dir() {
     let env = TestEnv::new();
 
-    // Create a real dotfile in $HOME.
     let bashrc = env.home.path().join(".bashrc");
     std::fs::write(&bashrc, "# my bashrc\n").unwrap();
 
-    // Run `archdots init --name rice` — this discovers .bashrc and writes a
-    // profile where source = ".bashrc" (relative to $HOME).
     env.cmd()
         .args(["init", "--name", "rice"])
         .assert()
@@ -67,51 +64,60 @@ fn init_then_apply_does_not_create_circular_symlink() {
     let profile_path = env.profiles_dir().join("rice.toml");
     assert!(profile_path.exists(), "rice.toml must be created by init");
 
-    // Verify the profile's source field is relative (not absolute).
+    // The profile must declare a [paths] source_root pointing at the
+    // managed staging dir. Without it we would regress to the v0.5
+    // CircularSymlink behaviour.
     let profile_content = std::fs::read_to_string(&profile_path).unwrap();
     assert!(
-        profile_content.contains("source ="),
-        "profile must contain a source field"
-    );
-    // source must NOT be an absolute path (it should be relative to $HOME).
-    assert!(
-        !profile_content.contains(&format!(
-            "source = \"{}/.bashrc\"",
-            env.home.path().display()
-        )),
-        "source must be relative, not absolute"
+        profile_content.contains("[paths]") && profile_content.contains("source_root"),
+        "profile must include [paths] source_root\n--- got ---\n{profile_content}"
     );
 
-    // Apply may exit 0 (linked) or 2 (CircularSymlink conflict detected) —
-    // both are acceptable. What must NOT happen is ELOOP (unreadable self-symlink).
+    // The copy must exist under $XDG_DATA_HOME.
+    let managed_copy = env
+        .data
+        .path()
+        .join("archdots/profiles/rice/dotfiles/.bashrc");
+    assert!(
+        managed_copy.exists(),
+        "init must copy .bashrc into the managed staging dir at {}",
+        managed_copy.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&managed_copy).unwrap(),
+        "# my bashrc\n",
+        "managed copy content must match the original"
+    );
+
+    // apply must succeed cleanly now that source and target differ.
     let output = env.cmd().args(["apply", "rice", "--yes"]).output().unwrap();
-
     let code = output.status.code().unwrap_or(-1);
-    assert!(
-        code == 0 || code == 2,
-        "apply must exit 0 (linked) or 2 (conflict), not {code}\nstdout: {}\nstderr: {}",
+    assert_eq!(
+        code,
+        0,
+        "apply must exit 0 after the v0.6 init redesign\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // The dotfile must still be readable — no ELOOP corruption.
-    let content = std::fs::read_to_string(&bashrc)
-        .expect("dotfile must remain readable after apply attempt (no ELOOP)");
-    assert_eq!(content, "# my bashrc\n", "dotfile content must be intact");
-
-    // If apply succeeded and the target became a symlink, it must not point
-    // to itself.
-    if code == 0 {
-        let meta = bashrc.symlink_metadata().unwrap();
-        if meta.file_type().is_symlink() {
-            let link_target = std::fs::read_link(&bashrc).unwrap();
-            assert_ne!(
-                link_target, bashrc,
-                "apply must not create a self-symlink (circular): {:?} → {:?}",
-                bashrc, link_target
-            );
-        }
-    }
+    // The target must now be a symlink and resolve to the managed copy.
+    let meta = bashrc.symlink_metadata().unwrap();
+    assert!(
+        meta.file_type().is_symlink(),
+        "apply must replace ~/.bashrc with a symlink"
+    );
+    let canonical_target = std::fs::canonicalize(&bashrc).unwrap();
+    let canonical_managed = std::fs::canonicalize(&managed_copy).unwrap();
+    assert_eq!(
+        canonical_target, canonical_managed,
+        "symlink must resolve to the managed copy"
+    );
+    // Content stays readable through the symlink.
+    assert_eq!(
+        std::fs::read_to_string(&bashrc).unwrap(),
+        "# my bashrc\n",
+        "content must still be readable through the symlink"
+    );
 }
 
 /// `archdots apply` on a profile where source == target must be rejected with

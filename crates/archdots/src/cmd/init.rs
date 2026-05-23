@@ -7,12 +7,18 @@ use anyhow::{Context, Result};
 use archdots_core::detector::DetectedDotfile;
 use archdots_core::detector::Detector;
 use archdots_core::profile::{
-    Dependencies, FileEntry, Hooks, LinkMode, Profile, ProfileMeta, CURRENT_SCHEMA_VERSION,
+    Dependencies, FileEntry, Hooks, LinkMode, Paths, Profile, ProfileMeta, CURRENT_SCHEMA_VERSION,
 };
 
 use crate::xdg;
 
 /// Run `archdots init`.
+///
+/// Scans `$HOME` for known dotfiles, copies each one into a managed
+/// staging directory under `$XDG_DATA_HOME/archdots/profiles/<name>/dotfiles/`,
+/// and writes a profile whose `[paths] source_root` points to that directory.
+/// Originals in `$HOME` are not touched — `apply` is the step that replaces
+/// them with symlinks back into the staging dir.
 pub fn run(name: &str, output: Option<PathBuf>, force: bool) -> Result<()> {
     let home = xdg::home_dir()?;
 
@@ -29,7 +35,18 @@ pub fn run(name: &str, output: Option<PathBuf>, force: bool) -> Result<()> {
         );
     }
 
-    tracing::debug!(home = %home.display(), output = %out_path.display(), "scanning");
+    let managed_dir = xdg::data_home()?
+        .join("archdots")
+        .join("profiles")
+        .join(name)
+        .join("dotfiles");
+
+    tracing::debug!(
+        home = %home.display(),
+        output = %out_path.display(),
+        managed = %managed_dir.display(),
+        "scanning"
+    );
 
     let detector = Detector::new(&home).context("failed to initialise dotfile detector")?;
     let detected = detector.scan();
@@ -37,8 +54,12 @@ pub fn run(name: &str, output: Option<PathBuf>, force: bool) -> Result<()> {
 
     tracing::debug!(found = existing.len(), "scan complete");
 
+    let copied = copy_into_managed_dir(&existing, &home, &managed_dir, force)
+        .context("failed to copy detected dotfiles into managed directory")?;
     let files = build_file_entries(&existing, &home);
     let file_count = files.len();
+
+    let source_root = source_root_string(&managed_dir, &home);
 
     let profile = Profile {
         schema_version: CURRENT_SCHEMA_VERSION,
@@ -53,6 +74,9 @@ pub fn run(name: &str, output: Option<PathBuf>, force: bool) -> Result<()> {
         files,
         dependencies: Dependencies::default(),
         hooks: Hooks::default(),
+        paths: Paths {
+            source_root: Some(source_root.clone()),
+        },
     };
 
     profile
@@ -69,9 +93,61 @@ pub fn run(name: &str, output: Option<PathBuf>, force: bool) -> Result<()> {
         .with_context(|| format!("cannot write profile to {}", out_path.display()))?;
 
     println!("Profile '{}' saved to {}", name, out_path.display());
-    println!("{file_count} dotfile(s) detected.");
+    println!("{file_count} dotfile(s) detected, {copied} copied to {source_root}");
+    println!("Run `archdots apply {name}` to symlink them back into $HOME.");
 
     Ok(())
+}
+
+/// Copy each detected dotfile into `managed_dir`, mirroring the relative
+/// path it has under `$HOME`. Returns the number of files copied.
+///
+/// When `force` is false and a destination already exists, the copy is
+/// skipped (and not counted). When `force` is true, existing destinations
+/// are overwritten.
+///
+/// File mode bits are preserved by `std::fs::copy` on Unix. Symlinks in the
+/// source are followed (content is copied), so the managed dir never contains
+/// symlinks pointing back into `$HOME` — that would defeat the whole purpose.
+fn copy_into_managed_dir(
+    detected: &[DetectedDotfile],
+    home: &Path,
+    managed_dir: &Path,
+    force: bool,
+) -> Result<usize> {
+    let mut count = 0usize;
+    for d in detected {
+        let Ok(rel) = d.path.strip_prefix(home) else {
+            continue;
+        };
+        let dest = managed_dir.join(rel);
+
+        if dest.exists() && !force {
+            tracing::debug!(dest = %dest.display(), "destination exists, skipping");
+            continue;
+        }
+
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("cannot create {}", parent.display()))?;
+        }
+        std::fs::copy(&d.path, &dest)
+            .with_context(|| format!("cannot copy {} → {}", d.path.display(), dest.display()))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Convert `managed_dir` into the portable string written to
+/// `[paths] source_root`. If `managed_dir` lives under `$HOME`, returns a
+/// `~/`-prefixed form so the profile travels across users; otherwise returns
+/// the absolute path as-is.
+fn source_root_string(managed_dir: &Path, home: &Path) -> String {
+    if let Ok(rel) = managed_dir.strip_prefix(home) {
+        format!("~/{}", rel.display())
+    } else {
+        managed_dir.display().to_string()
+    }
 }
 
 fn make_id(app_name: &str, rel_path: &Path) -> String {
@@ -134,7 +210,7 @@ fn build_file_entries(detected: &[DetectedDotfile], home: &Path) -> Vec<FileEntr
 mod tests {
     use std::path::Path;
 
-    use super::make_id;
+    use super::{make_id, source_root_string};
 
     #[test]
     fn make_id_dotfile_in_home() {
@@ -165,5 +241,25 @@ mod tests {
         let id = make_id("x", Path::new("file"));
         assert!(!id.starts_with('-'));
         assert!(!id.ends_with('-'));
+    }
+
+    #[test]
+    fn source_root_under_home_becomes_tilde_prefixed() {
+        let home = Path::new("/home/u");
+        let managed = Path::new("/home/u/.local/share/archdots/profiles/default/dotfiles");
+        assert_eq!(
+            source_root_string(managed, home),
+            "~/.local/share/archdots/profiles/default/dotfiles"
+        );
+    }
+
+    #[test]
+    fn source_root_outside_home_stays_absolute() {
+        let home = Path::new("/home/u");
+        let managed = Path::new("/var/lib/archdots/profiles/default/dotfiles");
+        assert_eq!(
+            source_root_string(managed, home),
+            "/var/lib/archdots/profiles/default/dotfiles"
+        );
     }
 }

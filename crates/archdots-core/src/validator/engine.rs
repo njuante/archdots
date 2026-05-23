@@ -118,7 +118,8 @@ impl<'a> Validator<'a> {
                 continue;
             }
 
-            let source_path = Profile::resolve_source(file_entry, self.home)?;
+            let source_root = profile.source_root(self.home, &ctx)?;
+            let source_path = Profile::resolve_source(file_entry, &source_root)?;
 
             // Infer parser kind: prefer the expanded target path, fall back to source.
             // UnknownEnvVar is not swallowed — it surfaces as ValidatorError::Profile.

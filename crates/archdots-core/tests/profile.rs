@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use archdots_core::error::ProfileError;
 use archdots_core::profile::{
-    Dependencies, FileEntry, Hooks, LinkMode, Profile, ProfileMeta, ResolveCtx, WmKind, WmSpec,
-    CURRENT_SCHEMA_VERSION,
+    Dependencies, FileEntry, Hooks, LinkMode, Paths, Profile, ProfileMeta, ResolveCtx, WmKind,
+    WmSpec, CURRENT_SCHEMA_VERSION,
 };
 use tempfile::TempDir;
 
@@ -34,6 +34,7 @@ fn minimal_profile() -> Profile {
         }],
         dependencies: Dependencies::default(),
         hooks: Hooks::default(),
+        paths: Paths::default(),
     }
 }
 

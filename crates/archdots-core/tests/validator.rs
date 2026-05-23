@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use archdots_core::error::ProfileError;
 use archdots_core::packages::PackageDB;
-use archdots_core::profile::{Dependencies, FileEntry, Hooks, LinkMode, Profile, ProfileMeta};
+use archdots_core::profile::{Dependencies, FileEntry, Hooks, LinkMode, Paths, Profile, ProfileMeta};
 use archdots_core::validator::{
     DepKind, DepSource, DepStatus, ValidationWarning, Validator, ValidatorError, ValidatorOptions,
 };
@@ -36,6 +36,7 @@ fn empty_profile(name: &str) -> Profile {
         files: vec![],
         dependencies: Dependencies::default(),
         hooks: Hooks::default(),
+        paths: Paths::default(),
     }
 }
 

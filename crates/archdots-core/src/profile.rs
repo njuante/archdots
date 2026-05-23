@@ -6,7 +6,10 @@
 //!
 //! # Storage model
 //!
-//! * [`FileEntry::source`] is always **relative to `$HOME`**.
+//! * [`FileEntry::source`] is relative to a configurable *source root*.
+//!   The root is controlled by the optional `[paths] source_root` field
+//!   on the profile (added in v0.6.0). When unset, sources resolve against
+//!   `$HOME` for backwards compatibility with v0.5.x profiles.
 //!   Call [`Profile::resolve_source`] at apply time to obtain an absolute path.
 //! * [`FileEntry::target`] is stored **unexpanded** (may contain `~` or
 //!   `$VAR`/`${VAR}`).  Call [`Profile::resolve_target`] with a [`ResolveCtx`]
@@ -49,6 +52,11 @@ pub struct Profile {
     /// Lifecycle hooks.
     #[serde(default)]
     pub hooks: Hooks,
+    /// Path-resolution settings (introduced in v0.6.0).
+    ///
+    /// When absent, source paths resolve against `$HOME` (v0.5.x behaviour).
+    #[serde(default, skip_serializing_if = "Paths::is_empty", rename = "paths")]
+    pub paths: Paths,
 }
 
 // ── sub-types ─────────────────────────────────────────────────────────────────
@@ -146,6 +154,32 @@ pub struct Dependencies {
     /// Nice-to-have packages from the official repos.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub optional_pacman: Vec<String>,
+}
+
+/// Path-resolution settings under the `[paths]` table.
+///
+/// Added in v0.6.0 to support profiles whose dotfiles live outside `$HOME`
+/// (e.g. in a managed staging directory created by `archdots init`).
+/// Profiles written before v0.6.0 omit this table; in that case sources
+/// resolve against `$HOME`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Paths {
+    /// Root directory that [`FileEntry::source`] paths are relative to.
+    ///
+    /// Stored **unexpanded** (may contain leading `~` and `$VAR` / `${VAR}`).
+    /// Resolved via [`ResolveCtx`] at apply time so the same profile is
+    /// portable across machines and users.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_root: Option<String>,
+}
+
+impl Paths {
+    /// `true` when no field is set; used by `skip_serializing_if` so the
+    /// table is omitted from the TOML output when unused.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.source_root.is_none()
+    }
 }
 
 /// Lifecycle hooks (paths relative to the profile directory).
@@ -382,42 +416,75 @@ impl Profile {
         Ok(names)
     }
 
+    /// Compute the effective source-root directory for this profile.
+    ///
+    /// Returns the expanded `[paths] source_root` when set, otherwise `home`
+    /// (the v0.5.x default that keeps existing profiles working).
+    ///
+    /// # Errors
+    ///
+    /// * [`ProfileError::UnknownEnvVar`] — a `$VAR` reference in
+    ///   `source_root` has no value in `ctx.env`.
+    pub fn source_root(&self, home: &Path, ctx: &ResolveCtx<'_>) -> Result<PathBuf, ProfileError> {
+        let Some(raw) = self.paths.source_root.as_deref() else {
+            return Ok(home.to_path_buf());
+        };
+        let expanded = expand_vars(raw, ctx)?;
+        let path = if expanded == "~" {
+            ctx.home.to_path_buf()
+        } else if let Some(rest) = expanded.strip_prefix("~/") {
+            ctx.home.join(rest)
+        } else {
+            PathBuf::from(&expanded)
+        };
+        Ok(path)
+    }
+
     /// Iterate over all file entries with their resolved `(source, target)` paths.
     ///
     /// Yields `(entry, absolute_source, absolute_target)` for each entry.
     /// Stops and returns the first error if any entry fails to resolve.
     ///
-    /// `home` is the user's `$HOME`; `source` values are relative to it.
+    /// `home` is used as the fallback source root when `[paths] source_root`
+    /// is unset (v0.5.x compatibility).
     ///
     /// # Errors
     ///
-    /// * Any error returned by [`Profile::resolve_source`] or
-    ///   [`Profile::resolve_target`].
+    /// * Any error returned by [`Profile::resolve_source`],
+    ///   [`Profile::resolve_target`] or [`Profile::source_root`].
     pub fn resolved_entries<'a>(
         &'a self,
         home: &'a Path,
         ctx: &'a ResolveCtx<'a>,
     ) -> impl Iterator<Item = Result<(&'a FileEntry, PathBuf, PathBuf), ProfileError>> + 'a {
         self.files.iter().map(move |entry| {
-            let src = Self::resolve_source(entry, home)?;
+            // Resolved per-iteration so the closure stays `Clone`-free.
+            // Cost is one tiny string scan; the alternative is making
+            // `ProfileError: Clone`, which would propagate through the
+            // public error surface for no real gain.
+            let root = self.source_root(home, ctx)?;
+            let src = Self::resolve_source(entry, &root)?;
             let tgt = Self::resolve_target(entry, ctx)?;
             Ok((entry, src, tgt))
         })
     }
 
-    /// Resolve `entry.source` (relative to `$HOME`) to an absolute path.
+    /// Resolve `entry.source` (relative to `source_root`) to an absolute path.
     ///
     /// The path is computed lexically; the source file does not need to exist.
+    /// Pass the result of [`Profile::source_root`] as `root`. Older callers
+    /// passing `$HOME` directly still work for profiles without a
+    /// `[paths] source_root` override.
     ///
     /// # Errors
     ///
-    /// * [`ProfileError::SourceEscape`] — the source path escapes `$HOME`
-    ///   via `..` components or is absolute.
-    pub fn resolve_source(entry: &FileEntry, home: &Path) -> Result<PathBuf, ProfileError> {
+    /// * [`ProfileError::SourceEscape`] — the source path escapes `root` via
+    ///   `..` components or is absolute.
+    pub fn resolve_source(entry: &FileEntry, root: &Path) -> Result<PathBuf, ProfileError> {
         if path_escapes_root(&entry.source) {
             return Err(ProfileError::SourceEscape(entry.source.clone()));
         }
-        Ok(home.join(&entry.source))
+        Ok(root.join(&entry.source))
     }
 }
 

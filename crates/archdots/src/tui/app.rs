@@ -205,6 +205,10 @@ impl App {
                 } else {
                     let action = self.handle_global_key(key);
                     self.dispatch(action);
+                    // Every key press warrants a redraw: views often mutate their own state
+                    // (cursor, scroll) and return Action::None, which dispatch() otherwise
+                    // treats as a no-op. Without this, the frame is stale until the next event.
+                    self.dirty = true;
                 }
             }
             Event::Input(_) => {}

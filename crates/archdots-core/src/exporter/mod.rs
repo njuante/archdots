@@ -776,6 +776,7 @@ impl<'a> Exporter<'a> {
             files: profile.files,
             dependencies: profile.dependencies,
             hooks: profile.hooks,
+            paths: profile.paths,
         }
     }
 
@@ -868,7 +869,8 @@ impl<'a> Exporter<'a> {
         ctx: &crate::profile::ResolveCtx<'_>,
         opts: &ExportOptions,
     ) -> Result<PlannedExportItem, ExportError> {
-        let source = Profile::resolve_source(entry, self.home)?;
+        let source_root = self.profile.source_root(self.home, ctx)?;
+        let source = Profile::resolve_source(entry, &source_root)?;
         let target = Profile::resolve_target(entry, ctx)?;
         let entry_id = entry.id.clone();
 
@@ -1364,7 +1366,7 @@ mod tests {
         ExportFormat, ExportOptions, Exporter, ItemClassification, PlannedExportItem,
         SecretAllowance, SecretFinding, SecretSeverity, SensitivePathKind,
     };
-    use crate::profile::{Dependencies, FileEntry, Hooks, LinkMode, Profile, ProfileMeta};
+    use crate::profile::{Dependencies, FileEntry, Hooks, LinkMode, Paths, Profile, ProfileMeta};
 
     // ── test helpers ──────────────────────────────────────────────────────────
 
@@ -1382,6 +1384,7 @@ mod tests {
             files,
             dependencies: Dependencies::default(),
             hooks: Hooks::default(),
+            paths: Paths::default(),
         }
     }
 
