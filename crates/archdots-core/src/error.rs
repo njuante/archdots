@@ -44,6 +44,10 @@ pub enum CoreError {
     /// A path is not valid UTF-8.
     #[error("path is not valid UTF-8: {0}")]
     NonUtf8Path(PathBuf),
+
+    /// Export pipeline error.
+    #[error(transparent)]
+    Export(#[from] ExportError),
 }
 
 /// Errors specific to the [`Linker`][crate::linker::Linker].
@@ -330,4 +334,52 @@ pub enum LockError {
     /// `acquire_blocking` did not obtain the lock before the deadline.
     #[error("timed out waiting for apply lock")]
     Timeout,
+}
+
+/// Errors that can occur during `archdots export` operations.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ExportError {
+    /// Profile loading or path-resolution error.
+    #[error(transparent)]
+    Profile(#[from] ProfileError),
+
+    /// I/O error associated with a specific path.
+    #[error("I/O error at {path}: {source}")]
+    Io {
+        /// Path that triggered the error.
+        path: PathBuf,
+        /// Underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The output directory already exists and is non-empty, and `--force` was
+    /// not specified.
+    #[error("output directory exists and is non-empty: {0}")]
+    OutputNotEmpty(PathBuf),
+
+    /// The plan is unsafe to write — findings or sensitive paths are present
+    /// and no override was provided.
+    #[error("export is not safe to write (findings or sensitive paths present); see plan")]
+    Unsafe,
+
+    /// A substitution or conditional in the embedded README / install template
+    /// could not be resolved. Indicates a programming bug in the template.
+    #[error("template render error: {0}")]
+    TemplateRender(String),
+
+    /// Invalid combination of options (e.g. `--format profile-only` together
+    /// with `--include-secrets`).
+    #[error("invalid configuration: {0}")]
+    InvalidOptions(String),
+
+    /// The embedded `secret_patterns.toml` rule set could not be compiled.
+    /// Indicates a programming bug in the embedded rules file.
+    #[error("scanner initialisation failed: {0}")]
+    ScannerInit(String),
+
+    /// A path required to be valid UTF-8 for the export pipeline is not.
+    #[error("invalid path: {0} (must be valid UTF-8)")]
+    NonUtf8Path(PathBuf),
 }

@@ -1,6 +1,7 @@
 pub mod apply;
 pub mod check;
 pub mod diff;
+pub mod export;
 pub mod history;
 pub mod init;
 pub mod profile;

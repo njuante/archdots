@@ -272,3 +272,92 @@ records the five load-bearing decisions so the rationale is greppable from
 
 - **"Still running…" hints after 10 s / 30 s (§11 case 8):** Not
   implemented in v0.4. Candidate for v0.4.1.
+
+## ADR-005 — Export design: fail-secure publishing (Fase 5)
+
+**Context:** Phase 5 introduces `archdots export <profile>`: it turns a
+profile into a publishable dotfiles directory (README, dotfiles copy,
+re-rooted profile TOML, standalone installer, `.gitignore`). The full
+design lives in [`PHASE_5_DESIGN.md`](./PHASE_5_DESIGN.md). This ADR
+records the seven load-bearing decisions so the rationale is greppable
+from `ARCHITECTURE.md` without opening the full design doc.
+
+1. **Three independent safety layers, each sufficient to abort alone.**
+   `export` runs a sensitive-path filter, a size/binary filter, and an
+   embedded `SecretScanner` — in that order, each capable of blocking the
+   export without the others. Relying on a single layer would mean a bypass
+   of any one mechanism (e.g., an innocent-looking target name whose source
+   symlinks into `~/.ssh/`) silently ships a secret. Redundancy is the
+   design, not an accident. `High`-severity scanner hits abort the whole
+   export even with `--yes`; the only override is an explicit opt-in
+   (`--allow-secret <rule_id>` per-rule or `--include-secrets` global) that
+   requires a typed TTY confirmation.
+
+2. **Dual-path check (target AND `canonicalize(source)`) in the
+   sensitive-path filter.** The path filter checks the declared target path
+   relative to `$HOME` **and** the canonicalized source path relative to
+   `$HOME`. Either match excludes the item. A profile entry with an innocent
+   target name (`~/foo`) whose source is a symlink into `~/.ssh/` is caught
+   at the path layer, before the content scan ever reads the bytes. This is
+   the same dual-check principle as Phase 2's TOCTOU mitigation: we stat
+   what we're actually operating on, not the pointer.
+
+3. **`export` is read-only on the archdots state directories.** It never
+   modifies `$XDG_DATA_HOME/archdots/` or `$XDG_STATE_HOME/archdots/`,
+   takes no `ApplyLock`, and does not invoke `pacman`. The `Validator` from
+   Phase 3 is intentionally not used: the README's dependency sections are
+   rendered straight from `Profile.dependencies`, keeping `export` runnable
+   on non-Arch hosts and decoupling "publish" from "audit".
+
+4. **Atomic write via staging-dir rename (same pattern as Phase 2).** The
+   output is built under a sibling `.archdots-export.tmp.<rand>` directory,
+   each file fsynced, then the staging dir itself fsynced, then
+   `rename`d over the final destination. On any error the staging dir is
+   removed and the destination is left untouched. The same atomicity
+   guarantee as `apply` (ADR-002 decision 5) applies: the user never sees a
+   half-written export directory.
+
+5. **`--format full|profile-only` via a flag, not two subcommands.**
+   `full` (default) produces the complete shareable repo structure;
+   `profile-only` produces only `README.md` and `archdots-profile.toml`.
+   Separate subcommands (`export-full` / `export-profile`) would share 95%
+   of their code and complicate shell completions; a flag keeps the surface
+   minimal. `--include-secrets` combined with `profile-only` is rejected at
+   flag-parse time (exit 3) because `profile-only` skips the scan phase and
+   has no file bytes to override.
+
+6. **Embedded template, no third-party engine.** The README is rendered from
+   a `include_str!` template with a ~60-line substitutor handling `{var}`,
+   `{IF cond}…{ENDIF}`, and `{FOR item IN list}…{ENDFOR}`. Tera /
+   handlebars / askama would introduce a new dependency class and a new
+   error class for what is ultimately a ~200-line output with a fixed set of
+   substitutions. User-overridable templates (`--readme <PATH>`) are left as
+   a non-breaking future addition behind `Exporter::render_readme`.
+
+7. **JSON output: `classification` values are always objects, never bare
+   strings.** `ItemClassification` variants are declared in struct form
+   (including empty `{}` variants) so serde external tagging emits a
+   consistent object shape for every variant. This is a contract from
+   v0.5.0: downstream tooling can match a single shape without branching on
+   `typeof`. Simple scalar enums (`format`, `severity`, `kind`) stay as
+   strings — they have no parameterised variants and their shape cannot need
+   to change without a breaking schema bump. The JSON output carries
+   `schema_version: 1` with the same versioning policy as Phase 3's
+   `check --json`: additive changes stay on v1, breaking changes bump to v2.
+
+**Consequences:**
+
+- New module `archdots_core::exporter` with sub-modules `scanner`, `glob`,
+  and `template`. No changes to `Profile`, `Linker`, `Validator`,
+  `Snapshot`, `Journal`, or `Lock`.
+- New embedded data files in `archdots-core/data/`: `sensitive_paths.toml`,
+  `secret_patterns.toml`, `readme_template.md`, `install_template.sh`,
+  `gitignore_template`.
+- New `ExportError` variant in `CoreError` (`#[non_exhaustive]`; additive).
+- No new workspace-level dependencies: `regex = "1"` was already present
+  (added in Phase 3's `archdots-core` dep list).
+- `archdots export` is a CLI-only surface in v0.5; no TUI integration (see
+  PHASE_5_DESIGN.md §F). A future `[E]xport profile` action in
+  `ProfilesView` is a non-breaking addition.
+- Exit codes `0/1/2/3` with the same precedence rule as Phase 3 (`check`):
+  `3 > 2 > 1 > 0`.

@@ -1,0 +1,131 @@
+# Sensitive-path denylist for `archdots export`.
+#
+# Entries are matched against paths relative to $HOME.
+# Three match kinds: prefix, exact, suffix.
+#
+# prefix — path starts with the given string (trailing / required for dirs)
+# exact  — path equals the given string exactly
+# suffix — path ends with the given string
+
+# ── Prefix rules (whole directories) ─────────────────────────────────────────
+
+[[prefix]]
+id = "ssh"
+path = ".ssh/"
+
+[[prefix]]
+id = "gnupg"
+path = ".gnupg/"
+
+[[prefix]]
+id = "aws"
+path = ".aws/"
+
+[[prefix]]
+id = "azure"
+path = ".azure/"
+
+[[prefix]]
+id = "gcloud"
+path = ".gcloud/"
+
+[[prefix]]
+id = "kube"
+path = ".kube/"
+
+[[prefix]]
+id = "docker-config"
+path = ".docker/"
+
+# ── Exact rules (specific well-known files) ───────────────────────────────────
+
+[[exact]]
+id = "netrc"
+path = ".netrc"
+
+[[exact]]
+id = "git-credentials"
+path = ".git-credentials"
+
+[[exact]]
+id = "pgpass"
+path = ".pgpass"
+
+[[exact]]
+id = "npmrc"
+path = ".npmrc"
+
+[[exact]]
+id = "pypirc"
+path = ".pypirc"
+
+[[exact]]
+id = "gh-hosts"
+path = ".config/gh/hosts.yml"
+
+[[exact]]
+id = "git-credentials-xdg"
+path = ".config/git/credentials"
+
+[[exact]]
+id = "rclone-config"
+path = ".config/rclone/rclone.conf"
+
+# Shell history files routinely contain pasted secrets.
+[[exact]]
+id = "bash-history"
+path = ".bash_history"
+
+[[exact]]
+id = "zsh-history"
+path = ".zsh_history"
+
+[[exact]]
+id = "psql-history"
+path = ".psql_history"
+
+[[exact]]
+id = "mysql-history"
+path = ".mysql_history"
+
+[[exact]]
+id = "lesshst"
+path = ".lesshst"
+
+# ── Suffix rules (file extensions) ───────────────────────────────────────────
+
+[[suffix]]
+id = "pem"
+ext = ".pem"
+
+[[suffix]]
+id = "key"
+ext = ".key"
+
+[[suffix]]
+id = "p12"
+ext = ".p12"
+
+[[suffix]]
+id = "pfx"
+ext = ".pfx"
+
+[[suffix]]
+id = "jks"
+ext = ".jks"
+
+[[suffix]]
+id = "kdbx"
+ext = ".kdbx"
+
+[[suffix]]
+id = "gpg"
+ext = ".gpg"
+
+[[suffix]]
+id = "wallet"
+ext = ".wallet"
+
+[[suffix]]
+id = "wallet-dat"
+ext = "wallet.dat"

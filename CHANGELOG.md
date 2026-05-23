@@ -5,6 +5,41 @@ All notable changes to archdots will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-05-23
+
+### Added
+
+- `archdots export <profile>`: turn a profile into a publishable dotfiles directory ready to push to GitHub.
+- **Three independent safety layers** — fail-secure by default:
+  - **Sensitive-path filter**: prefix / exact / suffix denylist (`~/.ssh/`, `~/.gnupg/`, `~/.aws/`, `.pem`, `.key`, shell history, etc.) matched against both the declared target path and `canonicalize(source)`. A symlink whose canonical source resolves into `~/.ssh/` is caught at the path layer.
+  - **Size / binary filter**: files larger than 1 MiB or whose first 8 KiB fail a printable-text sniff are excluded. Catches `.kdbx`, compiled blobs, fonts, and similar.
+  - **Content scan (`SecretScanner`)**: embedded regex ruleset (AWS key, GitHub/GitLab/Slack tokens, private-key headers, Stripe secrets, Google API keys, npm auth tokens, JWTs, generic `key=value` assignments). `High`-severity hits **abort the export** unless explicitly overridden; `Medium` hits warn but do not block.
+- `--include-secrets`: global override that bypasses the content-scan abort. Requires a TTY and a non-skippable typed confirmation (`I UNDERSTAND`); rejected on non-TTY stdin (exit 3). Never implied by `--yes`.
+- `--allow-path <GLOB>`, `--allow-binary <GLOB>`, `--allow-secret <ID[:GLOB]>`: per-path and per-rule allowlists for surgical overrides without the nuclear option.
+- `--format full|profile-only`:
+  - `full` (default): `README.md` + `dotfiles/` + `archdots-profile.toml` + `install.sh` + `.gitignore`. The recipient does not need archdots.
+  - `profile-only`: `README.md` + `archdots-profile.toml` only. Skips the scan phase. Incompatible with `--include-secrets` (exit 3).
+- `--check`: runs plan + scan and prints the report without writing anything. Exit 0 if clean, 2 if findings.
+- `--output <DIR>`, `--force`, `--yes`, `--no-readme`, `--no-install-script`, `--max-bytes <N>`, `--json` flags.
+- Atomic write: output is staged under a sibling `.archdots-export.tmp.<rand>` directory, fsynced, then `rename`d over the destination — same atomicity model as the apply pipeline (Phase 2).
+- Generated `README.md` from an embedded template (no third-party template engine): metadata table, dependency install commands, file manifest, excluded-files section, standalone `./install.sh` instructions, and archdots import recipe.
+- Generated POSIX `install.sh`: symlinks `dotfiles/` into `$HOME` with backup-on-conflict; lists pacman deps; notes AUR deps for manual install.
+- `archdots export --json`: stable JSON output with `schema_version: 1`. `classification` values are always objects (`{"include": {}}`, `{"exclude_sensitive_path": {...}}`), never bare strings — part of the v0.5.0 wire contract.
+- `findings_overridden` tracked in the JSON summary and printed report when `--allow-secret` or `--include-secrets` is used.
+- New `archdots-core::exporter` module: `Exporter`, `ExportPlan`, `PlannedExportItem`, `ItemClassification`, `SecretScanner`, `SecretFinding`, `ExportReport`, `ExportError`.
+- New embedded data files in `archdots-core/data/`: `sensitive_paths.toml`, `secret_patterns.toml`, `readme_template.md`, `install_template.sh`, `gitignore_template`.
+
+### Out of scope for v0.5 (not promised)
+
+- Git init / GitHub push / release creation.
+- Tar / zip bundle output.
+- Snapshot-id-based export.
+- User-overridable README or `install.sh` templates.
+- Multi-profile export.
+- TUI surface for export.
+- Recursive directory inclusion.
+- Entropy-based or binary secret detection.
+
 ## [0.4.0] - 2026-05-22
 
 ### Added

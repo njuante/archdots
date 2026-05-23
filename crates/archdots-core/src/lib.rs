@@ -9,6 +9,7 @@
 
 pub mod detector;
 pub mod error;
+pub mod exporter;
 pub mod journal;
 pub mod linker;
 pub mod lock;
