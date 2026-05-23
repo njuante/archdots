@@ -25,6 +25,7 @@ use ratatui::Terminal;
 /// `Terminal::draw`.
 pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Result<()> {
     let mut event_loop = EventLoop::new();
+    terminal.draw(|f| app.render(f))?;
     loop {
         app.drain_task_messages()?;
         let event = event_loop.next()?;
