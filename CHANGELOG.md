@@ -5,6 +5,29 @@ All notable changes to archdots will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-05-23
+
+### Fixed
+
+- `archdots apply` no longer fails with a misleading `too many links: found N,
+  max is 200` error when switching between profiles with ~15+ entries. The
+  journal's per-line byte ceiling (`MAX_LINE_BYTES`) is raised from 4000 to
+  16384. Root cause: v0.6.0 absolute source paths into the managed staging dir,
+  combined with `PriorState::Symlink { points_to }` recording another long
+  path per replaced symlink, pushed a 17-entry success record over the old
+  4000-byte cap. The original limit was sized for `PIPE_BUF` atomicity across
+  concurrent writers, but the journal is always written under `ApplyLock`, so
+  single-writer serialization is guaranteed by the lock — `MAX_LINE_BYTES`
+  only needs to fit one entry in memory. Symptom of the bug was a successful
+  apply at the filesystem level followed by an orphaned in-progress entry
+  blocking subsequent applies until `archdots recover --yes`.
+
+### Known issues
+
+- The error message still says `max is 200` (the link-count cap) when the
+  byte ceiling is the limit that triggers. Distinct error variants are
+  planned for v0.7.
+
 ## [0.6.0] - 2026-05-23
 
 ### Added

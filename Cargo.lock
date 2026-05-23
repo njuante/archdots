@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "archdots"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "archdots-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "flate2",
  "once_cell",

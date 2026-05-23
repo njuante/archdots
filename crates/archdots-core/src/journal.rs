@@ -25,10 +25,15 @@ use crate::{
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SCHEMA_VERSION: u32 = 1;
-/// Hard cap on links per entry so a serialized line stays below `PIPE_BUF`.
+/// Hard cap on links per entry so a serialized line stays below `MAX_LINE_BYTES`.
 pub const MAX_LINKS: usize = 200;
-/// Conservative byte ceiling (json + '\n'): real `PIPE_BUF` is 4096.
-const MAX_LINE_BYTES: usize = 4000;
+/// Byte ceiling for one serialized entry (json + `\n`). Set high enough that
+/// realistic profiles (~20 entries with absolute paths into the v0.6 staging
+/// directory, each with a `PriorState::Symlink { points_to }` field) fit. The
+/// original 4000 was sized for PIPE_BUF atomicity across concurrent writers,
+/// but the journal is always written under `ApplyLock` so single-writer
+/// serialization is guaranteed by the lock, not by per-write atomicity.
+const MAX_LINE_BYTES: usize = 16384;
 
 // ─── Serde helper: PathBuf ↔ UTF-8 string ────────────────────────────────────
 
