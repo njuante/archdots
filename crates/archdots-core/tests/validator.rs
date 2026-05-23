@@ -9,7 +9,9 @@ use std::path::PathBuf;
 
 use archdots_core::error::ProfileError;
 use archdots_core::packages::PackageDB;
-use archdots_core::profile::{Dependencies, FileEntry, Hooks, LinkMode, Paths, Profile, ProfileMeta};
+use archdots_core::profile::{
+    Dependencies, FileEntry, Hooks, LinkMode, Paths, Profile, ProfileMeta,
+};
 use archdots_core::validator::{
     DepKind, DepSource, DepStatus, ValidationWarning, Validator, ValidatorError, ValidatorOptions,
 };
