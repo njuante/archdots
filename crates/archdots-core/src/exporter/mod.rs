@@ -1586,11 +1586,7 @@ mod tests {
         let home = tmp.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
 
-        write_file(
-            &home,
-            "xorg.conf",
-            b"Section \"Device\"\nEndSection\n",
-        );
+        write_file(&home, "xorg.conf", b"Section \"Device\"\nEndSection\n");
 
         // Absolute target outside home.
         let entry = make_entry("xorg", "xorg.conf", "/etc/X11/xorg.conf.d/10-custom.conf");

@@ -75,17 +75,16 @@ fn init_then_apply_does_not_create_circular_symlink() {
     );
     // source must NOT be an absolute path (it should be relative to $HOME).
     assert!(
-        !profile_content.contains(&format!("source = \"{}/.bashrc\"", env.home.path().display())),
+        !profile_content.contains(&format!(
+            "source = \"{}/.bashrc\"",
+            env.home.path().display()
+        )),
         "source must be relative, not absolute"
     );
 
     // Apply may exit 0 (linked) or 2 (CircularSymlink conflict detected) —
     // both are acceptable. What must NOT happen is ELOOP (unreadable self-symlink).
-    let output = env
-        .cmd()
-        .args(["apply", "rice", "--yes"])
-        .output()
-        .unwrap();
+    let output = env.cmd().args(["apply", "rice", "--yes"]).output().unwrap();
 
     let code = output.status.code().unwrap_or(-1);
     assert!(
@@ -107,11 +106,9 @@ fn init_then_apply_does_not_create_circular_symlink() {
         if meta.file_type().is_symlink() {
             let link_target = std::fs::read_link(&bashrc).unwrap();
             assert_ne!(
-                link_target,
-                bashrc,
+                link_target, bashrc,
                 "apply must not create a self-symlink (circular): {:?} → {:?}",
-                bashrc,
-                link_target
+                bashrc, link_target
             );
         }
     }
@@ -152,11 +149,7 @@ target = "~/.myrc"
     .unwrap();
 
     // Apply must fail (non-zero exit) with a message about the conflict.
-    let output = env
-        .cmd()
-        .args(["apply", "bad", "--yes"])
-        .output()
-        .unwrap();
+    let output = env.cmd().args(["apply", "bad", "--yes"]).output().unwrap();
 
     assert_ne!(
         output.status.code(),

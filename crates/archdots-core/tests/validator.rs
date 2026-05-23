@@ -80,9 +80,7 @@ fn pacman_dep_installed_entry_installed() {
     let mut profile = empty_profile("rice");
     profile.dependencies.pacman = vec!["kitty".to_string()];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert_eq!(report.entries.len(), 1);
     assert_eq!(report.entries[0].name, "kitty");
@@ -102,9 +100,7 @@ fn pacman_dep_missing_exit_code_1() {
     let mut profile = empty_profile("rice");
     profile.dependencies.pacman = vec!["kitty".to_string()];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert_eq!(report.entries[0].status, DepStatus::Missing);
     assert_eq!(report.exit_code(), 1);
@@ -123,9 +119,7 @@ fn aur_dep_installed_kind_aur() {
     let mut profile = empty_profile("rice");
     profile.dependencies.aur = vec!["eww".to_string()];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert_eq!(report.entries[0].kind, DepKind::Aur);
     assert_eq!(report.entries[0].status, DepStatus::Installed);
@@ -144,9 +138,7 @@ fn aur_dep_no_helper_emits_warning() {
     let mut profile = empty_profile("rice");
     profile.dependencies.aur = vec!["eww".to_string()];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         report.warnings.iter().any(|w| {
@@ -167,9 +159,7 @@ fn optional_dep_missing_exit_code_2() {
     let mut profile = empty_profile("rice");
     profile.dependencies.optional_pacman = vec!["picom".to_string()];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert_eq!(report.entries[0].kind, DepKind::OptionalPacman);
     assert_eq!(report.entries[0].status, DepStatus::Missing);
@@ -188,9 +178,7 @@ fn exit_code_precedence_required_over_optional() {
     profile.dependencies.pacman = vec!["kitty".to_string()];
     profile.dependencies.optional_pacman = vec!["picom".to_string()];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     // Both required and optional are missing; code 1 must win.
     assert_eq!(report.exit_code(), 1);
@@ -218,9 +206,7 @@ fn implicit_entry_bspwmrc_picom_installed() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     let picom = report
         .entries
@@ -250,9 +236,7 @@ fn unknown_binary_shallow_produces_unknown_binary_status() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         report.entries.iter().any(|e| {
@@ -285,9 +269,7 @@ fn declared_but_unused_and_implicit_for_different_binary() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         report.warnings.iter().any(|w| {
@@ -324,9 +306,7 @@ fn exec_dollar_var_emits_unresolved_variable_warning() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         report.warnings.iter().any(|w| {
@@ -354,9 +334,7 @@ fn unreadable_config_emits_warning_and_validate_continues() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         report
@@ -387,9 +365,7 @@ fn builtin_ls_filtered_not_in_entries() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         !report.entries.iter().any(|e| e.name == "ls"),
@@ -500,9 +476,7 @@ fn fifty_mentions_one_entry_with_all_mentions() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     let picom = report.entries.iter().find(|e| e.name == "picom").unwrap();
     if let DepSource::InferredFromConfig { mentions } = &picom.source {
@@ -524,9 +498,7 @@ fn validate_dedupes_aur_deps() {
     profile.dependencies.aur = vec!["swww".to_string(), "swww".to_string()];
 
     let v = Validator::new(&d, &home);
-    let report = v
-        .validate(&profile, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     let aur_entries: Vec<_> = report
         .entries

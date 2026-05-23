@@ -226,7 +226,10 @@ impl<'a> Linker<'a> {
             })
             .collect();
         if !circular.is_empty() {
-            return Err(LinkerError::ConflictsDetected { conflicts: circular }.into());
+            return Err(LinkerError::ConflictsDetected {
+                conflicts: circular,
+            }
+            .into());
         }
 
         let conflicts: Vec<(PathBuf, ConflictReason)> = plan
@@ -697,8 +700,14 @@ fn classify(spec: &LinkSpec, home: &Path) -> Result<PlannedLink, CoreError> {
     // regular file / absent path (no symlink), so a symlink-to-source never
     // falsely triggers this check.
     if !spec.target.is_symlink() {
-        let src_canon = spec.source.canonicalize().unwrap_or_else(|_| spec.source.clone());
-        let tgt_cmp = spec.target.canonicalize().unwrap_or_else(|_| spec.target.clone());
+        let src_canon = spec
+            .source
+            .canonicalize()
+            .unwrap_or_else(|_| spec.source.clone());
+        let tgt_cmp = spec
+            .target
+            .canonicalize()
+            .unwrap_or_else(|_| spec.target.clone());
         if src_canon == tgt_cmp {
             return Ok(PlannedLink {
                 spec: spec.clone(),
