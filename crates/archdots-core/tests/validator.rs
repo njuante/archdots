@@ -56,15 +56,10 @@ fn symlink_entry(id: &str, source: &str, target: &str) -> FileEntry {
 fn empty_profile_no_entries_no_warnings() {
     let d = db(MockRunner::new().expect_pacman_q("").expect_pacman_qm(""));
     let home = PathBuf::from("/home/test");
-    let profile_dir = PathBuf::from("/tmp");
     let v = Validator::new(&d, &home);
 
     let report = v
-        .validate(
-            &empty_profile("empty"),
-            &profile_dir,
-            ValidatorOptions::default(),
-        )
+        .validate(&empty_profile("empty"), ValidatorOptions::default())
         .unwrap();
 
     assert!(report.entries.is_empty());
@@ -80,15 +75,12 @@ fn pacman_dep_installed_entry_installed() {
         .expect_pacman_q("kitty 0.35.0-1\n")
         .expect_pacman_qm(""));
     let home = PathBuf::from("/home/test");
-    let profile_dir = PathBuf::from("/tmp");
     let v = Validator::new(&d, &home);
 
     let mut profile = empty_profile("rice");
     profile.dependencies.pacman = vec!["kitty".to_string()];
 
-    let report = v
-        .validate(&profile, &profile_dir, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert_eq!(report.entries.len(), 1);
     assert_eq!(report.entries[0].name, "kitty");
@@ -103,15 +95,12 @@ fn pacman_dep_installed_entry_installed() {
 fn pacman_dep_missing_exit_code_1() {
     let d = db(MockRunner::new().expect_pacman_q("").expect_pacman_qm(""));
     let home = PathBuf::from("/home/test");
-    let profile_dir = PathBuf::from("/tmp");
     let v = Validator::new(&d, &home);
 
     let mut profile = empty_profile("rice");
     profile.dependencies.pacman = vec!["kitty".to_string()];
 
-    let report = v
-        .validate(&profile, &profile_dir, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert_eq!(report.entries[0].status, DepStatus::Missing);
     assert_eq!(report.exit_code(), 1);
@@ -125,15 +114,12 @@ fn aur_dep_installed_kind_aur() {
         .expect_pacman_q("eww 0.6.0-1\n")
         .expect_pacman_qm("eww 0.6.0-1\n"));
     let home = PathBuf::from("/home/test");
-    let profile_dir = PathBuf::from("/tmp");
     let v = Validator::new(&d, &home);
 
     let mut profile = empty_profile("rice");
     profile.dependencies.aur = vec!["eww".to_string()];
 
-    let report = v
-        .validate(&profile, &profile_dir, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert_eq!(report.entries[0].kind, DepKind::Aur);
     assert_eq!(report.entries[0].status, DepStatus::Installed);
@@ -147,15 +133,12 @@ fn aur_dep_no_helper_emits_warning() {
         .expect_pacman_q("eww 0.6.0-1\n")
         .expect_pacman_qm("eww 0.6.0-1\n"));
     let home = PathBuf::from("/home/test");
-    let profile_dir = PathBuf::from("/tmp");
     let v = Validator::new(&d, &home);
 
     let mut profile = empty_profile("rice");
     profile.dependencies.aur = vec!["eww".to_string()];
 
-    let report = v
-        .validate(&profile, &profile_dir, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         report.warnings.iter().any(|w| {
@@ -171,15 +154,12 @@ fn aur_dep_no_helper_emits_warning() {
 fn optional_dep_missing_exit_code_2() {
     let d = db(MockRunner::new().expect_pacman_q("").expect_pacman_qm(""));
     let home = PathBuf::from("/home/test");
-    let profile_dir = PathBuf::from("/tmp");
     let v = Validator::new(&d, &home);
 
     let mut profile = empty_profile("rice");
     profile.dependencies.optional_pacman = vec!["picom".to_string()];
 
-    let report = v
-        .validate(&profile, &profile_dir, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert_eq!(report.entries[0].kind, DepKind::OptionalPacman);
     assert_eq!(report.entries[0].status, DepStatus::Missing);
@@ -192,16 +172,13 @@ fn optional_dep_missing_exit_code_2() {
 fn exit_code_precedence_required_over_optional() {
     let d = db(MockRunner::new().expect_pacman_q("").expect_pacman_qm(""));
     let home = PathBuf::from("/home/test");
-    let profile_dir = PathBuf::from("/tmp");
     let v = Validator::new(&d, &home);
 
     let mut profile = empty_profile("rice");
     profile.dependencies.pacman = vec!["kitty".to_string()];
     profile.dependencies.optional_pacman = vec!["picom".to_string()];
 
-    let report = v
-        .validate(&profile, &profile_dir, ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     // Both required and optional are missing; code 1 must win.
     assert_eq!(report.exit_code(), 1);
@@ -229,9 +206,7 @@ fn implicit_entry_bspwmrc_picom_installed() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, tmp.path(), ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     let picom = report
         .entries
@@ -261,9 +236,7 @@ fn unknown_binary_shallow_produces_unknown_binary_status() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, tmp.path(), ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         report.entries.iter().any(|e| {
@@ -296,9 +269,7 @@ fn declared_but_unused_and_implicit_for_different_binary() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, tmp.path(), ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         report.warnings.iter().any(|w| {
@@ -335,9 +306,7 @@ fn exec_dollar_var_emits_unresolved_variable_warning() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, tmp.path(), ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         report.warnings.iter().any(|w| {
@@ -365,9 +334,7 @@ fn unreadable_config_emits_warning_and_validate_continues() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, tmp.path(), ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         report
@@ -398,9 +365,7 @@ fn builtin_ls_filtered_not_in_entries() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, tmp.path(), ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     assert!(
         !report.entries.iter().any(|e| e.name == "ls"),
@@ -439,7 +404,7 @@ fn deep_resolves_binary_via_pacman_f() {
         strict: false,
         deep: true,
     };
-    let report = v.validate(&profile, tmp.path(), opts).unwrap();
+    let report = v.validate(&profile, opts).unwrap();
 
     let entry = report.entries.iter().find(|e| e.name == "xyz-deep-pkg");
     assert!(entry.is_some(), "expected implicit entry for xyz-deep-pkg");
@@ -475,7 +440,7 @@ fn deep_files_db_not_synced_warning_emitted_once() {
         strict: false,
         deep: true,
     };
-    let report = v.validate(&profile, tmp.path(), opts).unwrap();
+    let report = v.validate(&profile, opts).unwrap();
 
     let count = report
         .warnings
@@ -511,9 +476,7 @@ fn fifty_mentions_one_entry_with_all_mentions() {
         "~/.config/bspwm/bspwmrc",
     )];
 
-    let report = v
-        .validate(&profile, tmp.path(), ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     let picom = report.entries.iter().find(|e| e.name == "picom").unwrap();
     if let DepSource::InferredFromConfig { mentions } = &picom.source {
@@ -535,9 +498,7 @@ fn validate_dedupes_aur_deps() {
     profile.dependencies.aur = vec!["swww".to_string(), "swww".to_string()];
 
     let v = Validator::new(&d, &home);
-    let report = v
-        .validate(&profile, tmp.path(), ValidatorOptions::default())
-        .unwrap();
+    let report = v.validate(&profile, ValidatorOptions::default()).unwrap();
 
     let aur_entries: Vec<_> = report
         .entries
@@ -584,7 +545,7 @@ fn validate_propagates_unknown_env_var_from_target() {
 
     let v = Validator::new(&d, &home);
     let err = v
-        .validate(&profile, tmp.path(), ValidatorOptions::default())
+        .validate(&profile, ValidatorOptions::default())
         .unwrap_err();
 
     assert!(

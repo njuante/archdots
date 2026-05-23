@@ -56,7 +56,6 @@ impl<'a> Validator<'a> {
     pub fn validate(
         &self,
         profile: &Profile,
-        profile_dir: &Path,
         opts: ValidatorOptions,
     ) -> Result<ValidationReport, ValidatorError> {
         let profile_name = profile.profile.name.clone();
@@ -119,7 +118,7 @@ impl<'a> Validator<'a> {
                 continue;
             }
 
-            let source_path = Profile::resolve_source(file_entry, profile_dir)?;
+            let source_path = Profile::resolve_source(file_entry, self.home)?;
 
             // Infer parser kind: prefer the expanded target path, fall back to source.
             // UnknownEnvVar is not swallowed — it surfaces as ValidatorError::Profile.

@@ -169,6 +169,7 @@ fn conflict_label(r: archdots_core::linker::ConflictReason) -> &'static str {
         archdots_core::linker::ConflictReason::OutsideHome => "conflict:outside-home",
         archdots_core::linker::ConflictReason::SourceMissing => "conflict:source-missing",
         archdots_core::linker::ConflictReason::TargetIsDirectory => "conflict:target-is-dir",
+        archdots_core::linker::ConflictReason::CircularSymlink => "conflict:circular-symlink",
         _ => "conflict:unknown",
     }
 }

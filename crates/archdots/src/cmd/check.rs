@@ -70,7 +70,7 @@ pub fn run(args: CheckArgs) -> Result<i32> {
         strict: args.strict,
         deep: args.deep,
     };
-    let report = match validator.validate(&profile, &profile_dir, opts) {
+    let report = match validator.validate(&profile, opts) {
         Ok(r) => r,
         Err(ValidatorError::Package(PackageError::PacmanMissing)) => {
             eprintln!(

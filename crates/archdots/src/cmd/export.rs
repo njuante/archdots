@@ -567,7 +567,7 @@ pub fn run(args: ExportArgs) -> Result<i32> {
 
     // 8. Build Exporter.
     let home = xdg::home_dir()?;
-    let exporter = Exporter::new(&profile, &profile_dir, &home);
+    let exporter = Exporter::new(&profile, &home);
 
     // 9. PLAN.
     let mut plan = match exporter.plan(&opts) {

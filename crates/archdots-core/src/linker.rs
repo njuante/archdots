@@ -95,6 +95,9 @@ pub enum ConflictReason {
     SourceMissing,
     /// `target` exists and is a directory.
     TargetIsDirectory,
+    /// `source` and `target` resolve to the same path — linking would create
+    /// a circular symlink (ELOOP).
+    CircularSymlink,
 }
 
 /// Result of [`Linker::plan`].
@@ -206,6 +209,25 @@ impl<'a> Linker<'a> {
             return Err(JournalError::TooManyLinks {
                 found: plan.items.len(),
                 max: MAX_LINKS,
+            }
+            .into());
+        }
+
+        // CircularSymlink is a hard error: --force cannot override it because
+        // creating a self-symlink (source == target) corrupts the user's file.
+        let circular: Vec<(PathBuf, ConflictReason)> = plan
+            .items
+            .iter()
+            .filter_map(|p| match p.disposition {
+                LinkDisposition::Conflict(ConflictReason::CircularSymlink) => {
+                    Some((p.spec.target.clone(), ConflictReason::CircularSymlink))
+                }
+                _ => None,
+            })
+            .collect();
+        if !circular.is_empty() {
+            return Err(LinkerError::ConflictsDetected {
+                conflicts: circular,
             }
             .into());
         }
@@ -670,6 +692,29 @@ fn classify(spec: &LinkSpec, home: &Path) -> Result<PlannedLink, CoreError> {
             disposition: LinkDisposition::Conflict(ConflictReason::SourceMissing),
             prior_state: prior,
         });
+    }
+
+    // 1b. Source and target must not resolve to the same filesystem entry.
+    // Do NOT canonicalize target if it is already a symlink — that is the
+    // AlreadyOwned case, not a circular one. Only compare when target is a
+    // regular file / absent path (no symlink), so a symlink-to-source never
+    // falsely triggers this check.
+    if !spec.target.is_symlink() {
+        let src_canon = spec
+            .source
+            .canonicalize()
+            .unwrap_or_else(|_| spec.source.clone());
+        let tgt_cmp = spec
+            .target
+            .canonicalize()
+            .unwrap_or_else(|_| spec.target.clone());
+        if src_canon == tgt_cmp {
+            return Ok(PlannedLink {
+                spec: spec.clone(),
+                disposition: LinkDisposition::Conflict(ConflictReason::CircularSymlink),
+                prior_state: prior,
+            });
+        }
     }
 
     // 2. Target must live under $HOME.

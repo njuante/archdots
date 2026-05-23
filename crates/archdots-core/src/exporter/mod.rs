@@ -32,7 +32,6 @@ const GITIGNORE_TEMPLATE: &str = include_str!("../../data/gitignore_template");
 /// call. No XDG state is written. No lock is acquired.
 pub struct Exporter<'a> {
     profile: &'a Profile,
-    profile_dir: &'a Path,
     home: &'a Path,
     /// Parsed entries from the embedded `sensitive_paths.toml`.
     /// Each entry is `(rule_id, kind, pattern_string)`.
@@ -328,9 +327,9 @@ impl<'a> Exporter<'a> {
     /// # Parameters
     ///
     /// - `profile` — the profile to export.
-    /// - `profile_dir` — directory containing the profile's dotfiles (sources).
-    /// - `home` — the user's home directory; used for target resolution and
-    ///   relative-path calculations.
+    /// - `home` — the user's `$HOME`; `source` values in the profile are
+    ///   resolved relative to it, and it is used for target relative-path
+    ///   calculations.
     ///
     /// # Panics
     ///
@@ -338,7 +337,7 @@ impl<'a> Exporter<'a> {
     /// indicates a programming error in the data file and should never occur in
     /// a release build.
     #[must_use]
-    pub fn new(profile: &'a Profile, profile_dir: &'a Path, home: &'a Path) -> Self {
+    pub fn new(profile: &'a Profile, home: &'a Path) -> Self {
         let catalog: SensitivePathCatalog =
             toml::from_str(SENSITIVE_PATHS_TOML).expect("embedded sensitive_paths.toml is valid");
 
@@ -357,7 +356,6 @@ impl<'a> Exporter<'a> {
 
         Self {
             profile,
-            profile_dir,
             home,
             sensitive_paths,
         }
@@ -870,7 +868,7 @@ impl<'a> Exporter<'a> {
         ctx: &crate::profile::ResolveCtx<'_>,
         opts: &ExportOptions,
     ) -> Result<PlannedExportItem, ExportError> {
-        let source = Profile::resolve_source(entry, self.profile_dir)?;
+        let source = Profile::resolve_source(entry, self.home)?;
         let target = Profile::resolve_target(entry, ctx)?;
         let entry_id = entry.id.clone();
 
@@ -1419,7 +1417,7 @@ mod tests {
     fn sensitive_prefix_ssh_matches() {
         let profile = make_profile("t", vec![]);
         let home = PathBuf::from("/tmp");
-        let exp = Exporter::new(&profile, &home, &home);
+        let exp = Exporter::new(&profile, &home);
         let hit = exp.check_sensitive_path(".ssh/id_ed25519");
         assert!(
             matches!(hit, Some((_, SensitivePathKind::Prefix))),
@@ -1431,7 +1429,7 @@ mod tests {
     fn sensitive_exact_netrc_matches() {
         let profile = make_profile("t", vec![]);
         let home = PathBuf::from("/tmp");
-        let exp = Exporter::new(&profile, &home, &home);
+        let exp = Exporter::new(&profile, &home);
         let hit = exp.check_sensitive_path(".netrc");
         assert!(
             matches!(hit, Some((_, SensitivePathKind::Exact))),
@@ -1443,7 +1441,7 @@ mod tests {
     fn sensitive_suffix_pem_matches() {
         let profile = make_profile("t", vec![]);
         let home = PathBuf::from("/tmp");
-        let exp = Exporter::new(&profile, &home, &home);
+        let exp = Exporter::new(&profile, &home);
         let hit = exp.check_sensitive_path("certs/server.pem");
         assert!(
             matches!(hit, Some((_, SensitivePathKind::Suffix))),
@@ -1455,7 +1453,7 @@ mod tests {
     fn sensitive_normal_path_no_match() {
         let profile = make_profile("t", vec![]);
         let home = PathBuf::from("/tmp");
-        let exp = Exporter::new(&profile, &home, &home);
+        let exp = Exporter::new(&profile, &home);
         assert!(
             exp.check_sensitive_path(".config/hypr/hyprland.conf")
                 .is_none(),
@@ -1469,11 +1467,9 @@ mod tests {
     fn plan_normal_file_rel_in_repo() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
-        std::fs::create_dir_all(&profile_dir).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        write_file(&profile_dir, "bar", b"hello\n");
+        write_file(&home, "bar", b"hello\n");
 
         let target = format!("{}/.config/foo/bar", home.display());
         let entry = FileEntry {
@@ -1485,7 +1481,7 @@ mod tests {
             required: true,
         };
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert_eq!(plan.items.len(), 1);
@@ -1505,12 +1501,10 @@ mod tests {
     fn plan_sensitive_path_ssh_excluded() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         write_file(
-            &profile_dir,
+            &home,
             "id_ed25519",
             b"-----BEGIN OPENSSH PRIVATE KEY-----\n",
         );
@@ -1518,7 +1512,7 @@ mod tests {
         let target = format!("{}/.ssh/id_ed25519", home.display());
         let entry = make_entry("key", "id_ed25519", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert!(
@@ -1537,12 +1531,10 @@ mod tests {
     fn plan_size_limit_excluded() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // Create a 2 MiB sparse file.
-        let large = profile_dir.join("big");
+        let large = home.join("big");
         {
             let f = std::fs::File::create(&large).unwrap();
             f.set_len(2 * 1024 * 1024).unwrap();
@@ -1551,7 +1543,7 @@ mod tests {
         let target = format!("{}/.config/big", home.display());
         let entry = make_entry("big", "big", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert!(
@@ -1567,17 +1559,15 @@ mod tests {
     fn plan_binary_excluded() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // File with null bytes → binary.
-        write_file(&profile_dir, "font.ttf", &[0u8, 1, 2, 3, 0, 255]);
+        write_file(&home, "font.ttf", &[0u8, 1, 2, 3, 0, 255]);
 
         let target = format!("{}/.local/share/fonts/font.ttf", home.display());
         let entry = make_entry("font", "font.ttf", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert!(
@@ -1594,20 +1584,14 @@ mod tests {
     fn plan_target_outside_home() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(
-            &profile_dir,
-            "xorg.conf",
-            b"Section \"Device\"\nEndSection\n",
-        );
+        write_file(&home, "xorg.conf", b"Section \"Device\"\nEndSection\n");
 
         // Absolute target outside home.
         let entry = make_entry("xorg", "xorg.conf", "/etc/X11/xorg.conf.d/10-custom.conf");
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert!(
@@ -1623,18 +1607,16 @@ mod tests {
     fn plan_broken_symlink_required_is_error() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // Create a dangling symlink.
-        let link = profile_dir.join("broken");
+        let link = home.join("broken");
         std::os::unix::fs::symlink("/nonexistent/path/nowhere", &link).unwrap();
 
         let target = format!("{}/.config/broken", home.display());
         let entry = make_entry("broken", "broken", &target); // required = true
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
 
         let result = exp.plan(&ExportOptions::default());
         assert!(
@@ -1647,17 +1629,15 @@ mod tests {
     fn plan_broken_symlink_optional_classified() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        let link = profile_dir.join("broken");
+        let link = home.join("broken");
         std::os::unix::fs::symlink("/nonexistent/path/nowhere", &link).unwrap();
 
         let target = format!("{}/.config/broken", home.display());
         let entry = make_entry_optional("broken", "broken", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
 
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         assert!(
@@ -1673,17 +1653,15 @@ mod tests {
     fn plan_source_directory_excluded() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // Source is a directory.
-        std::fs::create_dir(profile_dir.join("mydir")).unwrap();
+        std::fs::create_dir(home.join("mydir")).unwrap();
 
         let target = format!("{}/.config/mydir", home.display());
         let entry = make_entry("mydir", "mydir", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
 
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         assert!(
@@ -1699,11 +1677,9 @@ mod tests {
     fn plan_allow_path_overrides_sensitive() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(&profile_dir, "config", b"Host example.com\n  User alice\n");
+        write_file(&home, "config", b"Host example.com\n  User alice\n");
 
         let target = format!("{}/.ssh/config", home.display());
         let entry = make_entry("sshcfg", "config", &target);
@@ -1714,7 +1690,7 @@ mod tests {
             ..ExportOptions::default()
         };
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&opts).unwrap();
 
         assert!(
@@ -1730,14 +1706,12 @@ mod tests {
     fn plan_allow_path_target_does_not_bypass_source_sensitive_hit() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // Real file lives under ~/.ssh/ → sensitive.
         let real = write_file(&home, ".ssh/id_ed25519", b"private key bytes\n");
-        // Profile source is a symlink with an innocent name.
-        let link = profile_dir.join("innocent");
+        // Profile source is a symlink with an innocent name, living in $HOME.
+        let link = home.join("innocent");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         // Target is also innocent (not under .ssh/).
@@ -1752,7 +1726,7 @@ mod tests {
             ..ExportOptions::default()
         };
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&opts).unwrap();
 
         assert!(
@@ -1772,12 +1746,10 @@ mod tests {
     fn plan_allow_path_source_path_overrides_source_sensitive_hit() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         let real = write_file(&home, ".ssh/id_ed25519", b"private key bytes\n");
-        let link = profile_dir.join("innocent");
+        let link = home.join("innocent");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let target = format!("{}/.config/innocent", home.display());
@@ -1790,7 +1762,7 @@ mod tests {
             ..ExportOptions::default()
         };
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&opts).unwrap();
 
         assert!(
@@ -1805,19 +1777,17 @@ mod tests {
     fn plan_valid_symlink_classified_include() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        // Create the real file and a symlink to it.
+        // Create the real file and a symlink to it from $HOME.
         let real = write_file(&tmp.path().join("dotfiles"), "zshrc", b"# zsh config\n");
-        let link = profile_dir.join("zshrc");
+        let link = home.join("zshrc");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let target = format!("{}/.zshrc", home.display());
         let entry = make_entry("zshrc", "zshrc", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
 
         let item = &plan.items[0];
@@ -1836,21 +1806,19 @@ mod tests {
     fn plan_symlink_to_sensitive_source_excluded() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // Real file is inside home/.ssh/
         let real = write_file(&home, ".ssh/id_ed25519", b"private key bytes\n");
-        // Profile source is a symlink pointing into .ssh/ — innocuous name
-        let link = profile_dir.join("innocent");
+        // Profile source is a symlink in $HOME pointing into .ssh/ — innocuous name
+        let link = home.join("innocent");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         // Target is also innocent (not under .ssh/)
         let target = format!("{}/.config/innocent", home.display());
         let entry = make_entry("innocent", "innocent", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert!(
@@ -1869,15 +1837,13 @@ mod tests {
     fn plan_missing_source_required_is_error() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // Source file does NOT exist.
         let target = format!("{}/.config/missing", home.display());
         let entry = make_entry("miss", "nonexistent.txt", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
 
         let result = exp.plan(&ExportOptions::default());
         assert!(
@@ -1890,14 +1856,12 @@ mod tests {
     fn plan_missing_source_optional_classified() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         let target = format!("{}/.config/missing", home.display());
         let entry = make_entry_optional("miss", "nonexistent.txt", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
 
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         assert!(
@@ -1918,16 +1882,14 @@ mod tests {
     fn scan_include_item_gets_findings() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(&profile_dir, "zshrc", AWS_KEY_CONTENT.as_bytes());
+        write_file(&home, "zshrc", AWS_KEY_CONTENT.as_bytes());
 
         let target = format!("{}/.zshrc", home.display());
         let entry = make_entry("zshrc", "zshrc", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let mut plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert!(matches!(
@@ -1951,12 +1913,10 @@ mod tests {
     fn scan_excluded_by_size_findings_remain_empty() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // 2 MiB sparse file — will be ExcludeBySize; put AWS key in metadata
-        let large = profile_dir.join("big.conf");
+        let large = home.join("big.conf");
         {
             use std::io::Write as _;
             let mut f = std::fs::File::create(&large).unwrap();
@@ -1967,7 +1927,7 @@ mod tests {
         let target = format!("{}/.config/big.conf", home.display());
         let entry = make_entry("big", "big.conf", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let mut plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert!(
@@ -1990,22 +1950,20 @@ mod tests {
     fn scan_symlink_reads_real_file_findings_present() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         let real_dir = tmp.path().join("real");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
         std::fs::create_dir_all(&real_dir).unwrap();
 
         // Real file with AWS key (outside home so no sensitive-path hit)
         let real = write_file(&real_dir, "zshrc", AWS_KEY_CONTENT.as_bytes());
-        // Symlink inside profile_dir
-        let link = profile_dir.join("zshrc");
+        // Symlink inside $HOME pointing to the real file
+        let link = home.join("zshrc");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let target = format!("{}/.zshrc", home.display());
         let entry = make_entry("zshrc", "zshrc", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let mut plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert!(matches!(
@@ -2028,16 +1986,14 @@ mod tests {
     fn scan_idempotent_no_duplicate_findings() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(&profile_dir, "zshrc", AWS_KEY_CONTENT.as_bytes());
+        write_file(&home, "zshrc", AWS_KEY_CONTENT.as_bytes());
 
         let target = format!("{}/.zshrc", home.display());
         let entry = make_entry("zshrc", "zshrc", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let mut plan = exp.plan(&ExportOptions::default()).unwrap();
 
         exp.scan(&mut plan).unwrap();
@@ -2100,7 +2056,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         let profile = make_profile("t", vec![]);
-        let exp = Exporter::new(&profile, home, home);
+        let exp = Exporter::new(&profile, home);
         let plan = make_simple_plan(home, vec![high_finding()]);
         assert!(!exp.is_safe_to_write(&plan, &ExportOptions::default()));
     }
@@ -2110,7 +2066,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         let profile = make_profile("t", vec![]);
-        let exp = Exporter::new(&profile, home, home);
+        let exp = Exporter::new(&profile, home);
         let plan = make_simple_plan(home, vec![high_finding()]);
         let opts = ExportOptions {
             allow_secret_rules: vec![SecretAllowance {
@@ -2127,7 +2083,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         let profile = make_profile("t", vec![]);
-        let exp = Exporter::new(&profile, home, home);
+        let exp = Exporter::new(&profile, home);
         let plan = make_simple_plan(home, vec![high_finding()]);
         let opts = ExportOptions {
             allow_secret_rules: vec![SecretAllowance {
@@ -2147,7 +2103,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         let profile = make_profile("t", vec![]);
-        let exp = Exporter::new(&profile, home, home);
+        let exp = Exporter::new(&profile, home);
         let plan = make_simple_plan(home, vec![medium_finding()]);
         assert!(
             exp.is_safe_to_write(&plan, &ExportOptions::default()),
@@ -2159,18 +2115,16 @@ mod tests {
     fn is_safe_false_for_exclude_sensitive_path() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().to_path_buf();
-        let profile_dir = tmp.path().join("p");
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         write_file(
-            &profile_dir,
+            &home,
             "id_ed25519",
             b"-----BEGIN OPENSSH PRIVATE KEY-----\n",
         );
         let target = format!("{}/.ssh/id_ed25519", home.display());
         let entry = make_entry("key", "id_ed25519", &target);
         let profile = make_profile("t", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let mut plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert!(matches!(
@@ -2190,7 +2144,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         let profile = make_profile("t", vec![]);
-        let exp = Exporter::new(&profile, home, home);
+        let exp = Exporter::new(&profile, home);
         let plan = make_simple_plan(home, vec![high_finding()]);
         let opts = ExportOptions {
             include_secrets: true,
@@ -2206,14 +2160,12 @@ mod tests {
     fn is_safe_include_secrets_does_not_override_sensitive_path() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().to_path_buf();
-        let profile_dir = tmp.path().join("p");
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(&profile_dir, "id_rsa", b"-----BEGIN RSA PRIVATE KEY-----\n");
+        write_file(&home, "id_rsa", b"-----BEGIN RSA PRIVATE KEY-----\n");
         let target = format!("{}/.ssh/id_rsa", home.display());
         let entry = make_entry("key", "id_rsa", &target);
         let profile = make_profile("t", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
 
         let opts = ExportOptions {
@@ -2231,7 +2183,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
         let profile = make_profile("t", vec![]);
-        let exp = Exporter::new(&profile, home, home);
+        let exp = Exporter::new(&profile, home);
         let plan = make_simple_plan(home, vec![]);
         assert!(
             exp.is_safe_to_write(&plan, &ExportOptions::default()),
@@ -2351,12 +2303,10 @@ mod tests {
     fn plan_allow_binary_overrides_binary_filter() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // Binary file (null bytes).
-        write_file(&profile_dir, "firmware.bin", &[0u8, 1, 2, 3, 0, 255]);
+        write_file(&home, "firmware.bin", &[0u8, 1, 2, 3, 0, 255]);
 
         let target = format!("{}/.config/firmware.bin", home.display());
         let entry = make_entry("fw", "firmware.bin", &target);
@@ -2367,7 +2317,7 @@ mod tests {
             ..ExportOptions::default()
         };
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&opts).unwrap();
 
         assert!(
@@ -2381,16 +2331,14 @@ mod tests {
     fn plan_pem_suffix_excluded_by_denylist() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(&profile_dir, "server.pem", b"-----BEGIN CERTIFICATE-----\n");
+        write_file(&home, "server.pem", b"-----BEGIN CERTIFICATE-----\n");
 
         let target = format!("{}/.config/server.pem", home.display());
         let entry = make_entry("cert", "server.pem", &target);
         let profile = make_profile("test", vec![entry]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
 
         assert!(
@@ -2430,18 +2378,16 @@ mod tests {
     fn render_readme_full_profile_has_all_sections() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(&profile_dir, "zshrc", b"# zsh config\n");
+        write_file(&home, "zshrc", b"# zsh config\n");
 
         let target = format!("{}/.zshrc", home.display());
         let entry = make_entry("zshrc", "zshrc", &target);
         let mut profile = make_full_profile();
         profile.files = vec![entry];
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         let readme = exp.render_readme(&plan, "0.5.0").unwrap();
 
@@ -2473,12 +2419,10 @@ mod tests {
     fn render_readme_no_deps_shows_none_declared() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         let profile = make_profile("empty-rice", vec![]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         let readme = exp.render_readme(&plan, "0.5.0").unwrap();
 
@@ -2497,16 +2441,14 @@ mod tests {
     fn render_readme_no_exclusions_omits_excluded_section() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(&profile_dir, "hypr.conf", b"monitor=,preferred,auto,1\n");
+        write_file(&home, "hypr.conf", b"monitor=,preferred,auto,1\n");
         let target = format!("{}/.config/hypr/hyprland.conf", home.display());
         let entry = make_entry("hypr", "hypr.conf", &target);
         let profile = make_profile("clean-rice", vec![entry]);
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         let readme = exp.render_readme(&plan, "0.5.0").unwrap();
 
@@ -2520,16 +2462,14 @@ mod tests {
     fn render_readme_has_exclusions_shows_excluded_section() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(&profile_dir, "id_rsa", b"-----BEGIN RSA PRIVATE KEY-----\n");
+        write_file(&home, "id_rsa", b"-----BEGIN RSA PRIVATE KEY-----\n");
         let target = format!("{}/.ssh/id_rsa", home.display());
         let entry = make_entry("key", "id_rsa", &target);
         let profile = make_profile("sec-rice", vec![entry]);
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         let readme = exp.render_readme(&plan, "0.5.0").unwrap();
 
@@ -2543,12 +2483,10 @@ mod tests {
     fn render_readme_version_and_date_in_footer() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         let profile = make_profile("footer-test", vec![]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         let readme = exp.render_readme(&plan, "1.2.3").unwrap();
 
@@ -2567,13 +2505,11 @@ mod tests {
     fn render_readme_description_injection_prevented() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         let mut profile = make_profile("test", vec![]);
         profile.profile.description = Some("# pwned\n## injected".to_string());
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         let readme = exp.render_readme(&plan, "0.5.0").unwrap();
 
@@ -2602,30 +2538,27 @@ mod tests {
     fn setup_write_test() -> (
         tempfile::TempDir,
         PathBuf,
-        PathBuf,
         crate::profile::Profile,
         crate::profile::FileEntry,
     ) {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(&profile_dir, "zshrc", b"# zsh\nexport PATH=$PATH:~/bin\n");
+        write_file(&home, "zshrc", b"# zsh\nexport PATH=$PATH:~/bin\n");
 
         let target = format!("{}/.zshrc", home.display());
         let entry = make_entry("zshrc", "zshrc", &target);
         let profile = make_profile("test-rice", vec![entry.clone()]);
-        (tmp, home, profile_dir, profile, entry)
+        (tmp, home, profile, entry)
     }
 
     #[test]
     fn write_happy_path_full_creates_expected_files() {
-        let (tmp, home, profile_dir, profile, _) = setup_write_test();
+        let (tmp, home, profile, _) = setup_write_test();
         let output_dir = tmp.path().join("out");
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         let report = exp
             .write(&plan, &output_dir, &ExportOptions::default(), false)
@@ -2668,10 +2601,10 @@ mod tests {
 
     #[test]
     fn write_full_profile_toml_has_rewritten_sources() {
-        let (tmp, home, profile_dir, profile, _) = setup_write_test();
+        let (tmp, home, profile, _) = setup_write_test();
         let output_dir = tmp.path().join("out");
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         exp.write(&plan, &output_dir, &ExportOptions::default(), false)
             .unwrap();
@@ -2690,14 +2623,14 @@ mod tests {
 
     #[test]
     fn write_profile_only_skips_dotfiles_and_install() {
-        let (tmp, home, profile_dir, profile, _) = setup_write_test();
+        let (tmp, home, profile, _) = setup_write_test();
         let output_dir = tmp.path().join("out");
 
         let opts = ExportOptions {
             format: ExportFormat::ProfileOnly,
             ..ExportOptions::default()
         };
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&opts).unwrap();
         exp.write(&plan, &output_dir, &opts, false).unwrap();
 
@@ -2721,12 +2654,12 @@ mod tests {
 
     #[test]
     fn write_nonempty_dir_without_force_returns_error() {
-        let (tmp, home, profile_dir, profile, _) = setup_write_test();
+        let (tmp, home, profile, _) = setup_write_test();
         let output_dir = tmp.path().join("out");
         std::fs::create_dir_all(&output_dir).unwrap();
         write_file(&output_dir, "existing.txt", b"hello\n");
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         let result = exp.write(&plan, &output_dir, &ExportOptions::default(), false);
 
@@ -2738,12 +2671,12 @@ mod tests {
 
     #[test]
     fn write_nonempty_dir_with_force_succeeds_no_orphan() {
-        let (tmp, home, profile_dir, profile, _) = setup_write_test();
+        let (tmp, home, profile, _) = setup_write_test();
         let output_dir = tmp.path().join("out");
         std::fs::create_dir_all(&output_dir).unwrap();
         write_file(&output_dir, "existing.txt", b"hello\n");
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         exp.write(&plan, &output_dir, &ExportOptions::default(), true)
             .unwrap();
@@ -2775,16 +2708,14 @@ mod tests {
     fn write_unsafe_plan_returns_unsafe_error() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("p");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        write_file(&profile_dir, "z", b"export KEY=AKIAIOSFODNN7EXAMPLE\n");
+        write_file(&home, "z", b"export KEY=AKIAIOSFODNN7EXAMPLE\n");
         let target = format!("{}/.zshrc", home.display());
         let entry = make_entry("z", "z", &target);
         let profile = make_profile("sec", vec![entry]);
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let mut plan = exp.plan(&ExportOptions::default()).unwrap();
         exp.scan(&mut plan).unwrap();
 
@@ -2805,11 +2736,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
-        let script = profile_dir.join("script.sh");
+        let script = home.join("script.sh");
         std::fs::write(&script, b"#!/bin/sh\necho hi\n").unwrap();
         let mut perms = std::fs::metadata(&script).unwrap().permissions();
         perms.set_mode(perms.mode() | 0o111);
@@ -2820,7 +2749,7 @@ mod tests {
         let profile = make_profile("test", vec![entry]);
         let output_dir = tmp.path().join("out");
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         exp.write(&plan, &output_dir, &ExportOptions::default(), false)
             .unwrap();
@@ -2834,14 +2763,12 @@ mod tests {
     fn write_symlink_source_is_copied_as_regular_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         let real_dir = tmp.path().join("real");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
         std::fs::create_dir_all(&real_dir).unwrap();
 
         let real = write_file(&real_dir, "zshrc", b"# real zshrc\n");
-        let link = profile_dir.join("zshrc");
+        let link = home.join("zshrc");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let target = format!("{}/.zshrc", home.display());
@@ -2849,7 +2776,7 @@ mod tests {
         let profile = make_profile("test", vec![entry]);
         let output_dir = tmp.path().join("out");
 
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         exp.write(&plan, &output_dir, &ExportOptions::default(), false)
             .unwrap();
@@ -2868,16 +2795,14 @@ mod tests {
     fn write_output_dir_is_regular_file_returns_error() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // Create a regular file where output_dir should go
         let output_dir = tmp.path().join("out.txt");
         std::fs::write(&output_dir, b"i am a file\n").unwrap();
 
         let profile = make_profile("test", vec![]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         let result = exp.write(&plan, &output_dir, &ExportOptions::default(), false);
 
@@ -2891,15 +2816,13 @@ mod tests {
     fn write_parent_missing_returns_io_error() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let profile_dir = tmp.path().join("profile");
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&profile_dir).unwrap();
 
         // Parent dir doesn't exist
         let output_dir = tmp.path().join("nonexistent-parent").join("out");
 
         let profile = make_profile("test", vec![]);
-        let exp = Exporter::new(&profile, &profile_dir, &home);
+        let exp = Exporter::new(&profile, &home);
         let plan = exp.plan(&ExportOptions::default()).unwrap();
         let result = exp.write(&plan, &output_dir, &ExportOptions::default(), false);
 

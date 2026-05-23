@@ -14,7 +14,7 @@
 //! let home = Path::new("/home/alice");
 //! let validator = Validator::new(&db, home);
 //! let profile = Profile::load_from_file(Path::new("/cfg/archdots/profiles/rice.toml")).unwrap();
-//! let report = validator.validate(&profile, Path::new("/cfg/archdots/profiles"), ValidatorOptions::default()).unwrap();
+//! let report = validator.validate(&profile, ValidatorOptions::default()).unwrap();
 //! println!("exit code: {}", report.exit_code());
 //! ```
 
